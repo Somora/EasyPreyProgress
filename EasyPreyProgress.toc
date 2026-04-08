@@ -1,0 +1,8 @@
+## Interface: 120001, 120005
+## Title: EasyPreyProgress
+## Notes: A compact progress bar for active Prey Hunts.
+## Author: Geoffrey Vanlommel
+## Version: 1.0.0
+## SavedVariables: EasyPreyProgressDB
+
+EasyPreyProgress.lua
