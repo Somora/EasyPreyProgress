@@ -54,8 +54,10 @@ local widgetHookInstalled = false
 local preyWidgetCache = nil
 local trackedPreyFrame = nil
 local trackedPreyFrames = setmetatable({}, { __mode = "k" })
+local trackedPreyVisualFrames = setmetatable({}, { __mode = "k" })
 local debugEnabled = false
 local hookedPreyFrames = setmetatable({}, { __mode = "k" })
+local ensurePreyWidgetHideHook
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -198,7 +200,64 @@ local function isPreyHuntProgressFrame(frameRef)
         and type(frameRef.AnimIn) == "function"
 end
 
-local function ensurePreyWidgetHideHook(frameRef)
+local function isLikelyPreyVisualFrame(frameRef)
+    if not frameRef then
+        return false
+    end
+
+    local name = nil
+    if frameRef.GetName then
+        local okName, resolvedName = pcall(frameRef.GetName, frameRef)
+        if okName and type(resolvedName) == "string" then
+            name = resolvedName
+        end
+    end
+    if type(name) == "string" then
+        local lowered = string.lower(name)
+        if lowered:find("prey", 1, true) or lowered:find("hunt", 1, true) then
+            return true
+        end
+        if lowered:find("icon", 1, true) or lowered:find("glow", 1, true) or lowered:find("pulse", 1, true) then
+            return true
+        end
+    end
+
+    if frameRef.effectController then
+        return true
+    end
+
+    if frameRef.GetRegions then
+        local okRegions, regions = pcall(function()
+            return { frameRef:GetRegions() }
+        end)
+        if okRegions and type(regions) == "table" then
+            for _, region in ipairs(regions) do
+                local regionName = nil
+                if region and region.GetName then
+                    local okRegionName, resolvedRegionName = pcall(region.GetName, region)
+                    if okRegionName and type(resolvedRegionName) == "string" then
+                        regionName = resolvedRegionName
+                    end
+                end
+                if type(regionName) == "string" then
+                    local lowered = string.lower(regionName)
+                    if lowered:find("prey", 1, true)
+                        or lowered:find("hunt", 1, true)
+                        or lowered:find("icon", 1, true)
+                        or lowered:find("glow", 1, true)
+                        or lowered:find("pulse", 1, true)
+                    then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+
+    return false
+end
+
+ensurePreyWidgetHideHook = function(frameRef)
     if not frameRef or hookedPreyFrames[frameRef] or not frameRef.HookScript then
         return
     end
@@ -224,28 +283,206 @@ local function captureLivePreyHuntFrames()
         return
     end
 
-    local okChildren, children = pcall(function()
-        return { container:GetChildren() }
-    end)
-    if not okChildren or type(children) ~= "table" then
-        return
-    end
+    local function scanFrameTree(frameRef, depth, visited)
+        if not frameRef or (depth or 0) > 6 then
+            return
+        end
 
-    for _, child in ipairs(children) do
-        if isPreyHuntProgressFrame(child) then
-            trackedPreyFrames[child] = true
-            trackedPreyFrame = child
-            ensurePreyWidgetHideHook(child)
+        visited = visited or {}
+        if visited[frameRef] then
+            return
+        end
+        visited[frameRef] = true
+
+        if isPreyHuntProgressFrame(frameRef) then
+            trackedPreyFrames[frameRef] = true
+            trackedPreyFrame = frameRef
+            ensurePreyWidgetHideHook(frameRef)
+        elseif frameRef ~= container and isLikelyPreyVisualFrame(frameRef) then
+            trackedPreyVisualFrames[frameRef] = true
+            ensurePreyWidgetHideHook(frameRef)
+        end
+
+        if frameRef.GetChildren then
+            local okChildren, children = pcall(function()
+                return { frameRef:GetChildren() }
+            end)
+            if okChildren and type(children) == "table" then
+                for _, child in ipairs(children) do
+                    scanFrameTree(child, (depth or 0) + 1, visited)
+                end
+            end
         end
     end
+
+    scanFrameTree(container, 0, {})
 end
 
 local function applyBlizzardWidgetVisibility()
     local db = getDB()
     captureLivePreyHuntFrames()
 
-    for frameRef in pairs(trackedPreyFrames) do
+    local function isLikelyAnimatedVisualRegion(region)
+        if not region then
+            return false
+        end
+
+        local objectType = region.GetObjectType and region:GetObjectType() or nil
+        if objectType ~= "Texture" and objectType ~= "FontString" then
+            return false
+        end
+
+        local regionName = nil
+        if region.GetName then
+            local okName, resolvedName = pcall(region.GetName, region)
+            if okName and type(resolvedName) == "string" then
+                regionName = resolvedName
+            end
+        end
+        if type(regionName) ~= "string" then
+            return false
+        end
+
+        local lowered = string.lower(regionName)
+        return lowered:find("icon", 1, true) ~= nil
+            or lowered:find("glow", 1, true) ~= nil
+            or lowered:find("pulse", 1, true) ~= nil
+            or lowered:find("flare", 1, true) ~= nil
+    end
+
+    local function stopFrameAnimations(frameRef, depth, visited)
+        if not frameRef or (depth or 0) > 6 then
+            return
+        end
+
+        visited = visited or {}
+        if visited[frameRef] then
+            return
+        end
+        visited[frameRef] = true
+
+        if frameRef.GetAnimationGroups then
+            local okGroups, groups = pcall(function()
+                return { frameRef:GetAnimationGroups() }
+            end)
+            if okGroups and type(groups) == "table" then
+                for _, group in ipairs(groups) do
+                    if group and group.Stop then
+                        pcall(group.Stop, group)
+                    end
+                end
+            end
+        end
+
+        local commonAnimFields = {
+            "AnimIn", "AnimOut", "GlowAnim", "PulseAnim", "Loop", "LoopingGlow", "Shine",
+        }
+        for _, fieldName in ipairs(commonAnimFields) do
+            local candidate = frameRef[fieldName]
+            if candidate and type(candidate) ~= "function" and candidate.Stop then
+                pcall(candidate.Stop, candidate)
+            end
+        end
+
+        if frameRef.GetRegions then
+            local okRegions, regions = pcall(function()
+                return { frameRef:GetRegions() }
+            end)
+            if okRegions and type(regions) == "table" then
+                for _, region in ipairs(regions) do
+                    if isLikelyAnimatedVisualRegion(region) then
+                        if region.SetAlpha then
+                            pcall(region.SetAlpha, region, 0)
+                        end
+                        if region.Hide then
+                            pcall(region.Hide, region)
+                        end
+                    end
+                end
+            end
+        end
+
+        if frameRef.GetChildren then
+            local okChildren, children = pcall(function()
+                return { frameRef:GetChildren() }
+            end)
+            if okChildren and type(children) == "table" then
+                for _, child in ipairs(children) do
+                    stopFrameAnimations(child, (depth or 0) + 1, visited)
+                end
+            end
+        end
+    end
+
+    local function setRegionVisibility(frameRef, visible, depth, visited)
+        if not frameRef or (depth or 0) > 6 then
+            return
+        end
+
+        visited = visited or {}
+        if visited[frameRef] then
+            return
+        end
+        visited[frameRef] = true
+
+        if frameRef.GetRegions then
+            local okRegions, regions = pcall(function()
+                return { frameRef:GetRegions() }
+            end)
+            if okRegions and type(regions) == "table" then
+                for _, region in ipairs(regions) do
+                    if region then
+                        if visible then
+                            if region.SetAlpha then
+                                pcall(region.SetAlpha, region, 1)
+                            end
+                            if region.Show then
+                                pcall(region.Show, region)
+                            end
+                        else
+                            if region.SetAlpha then
+                                pcall(region.SetAlpha, region, 0)
+                            end
+                            if region.Hide then
+                                pcall(region.Hide, region)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        if frameRef.GetChildren then
+            local okChildren, children = pcall(function()
+                return { frameRef:GetChildren() }
+            end)
+            if okChildren and type(children) == "table" then
+                for _, child in ipairs(children) do
+                    setRegionVisibility(child, visible, (depth or 0) + 1, visited)
+                    if visible then
+                        if child.SetAlpha then
+                            pcall(child.SetAlpha, child, 1)
+                        end
+                        if child.Show then
+                            pcall(child.Show, child)
+                        end
+                    else
+                        if child.SetAlpha then
+                            pcall(child.SetAlpha, child, 0)
+                        end
+                        if child.Hide then
+                            pcall(child.Hide, child)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local function applyVisibility(frameRef)
         if db.hideBlizzardPreyWidget then
+            stopFrameAnimations(frameRef, 0, {})
+            setRegionVisibility(frameRef, false, 0, {})
             if frameRef.SetAlpha then
                 pcall(frameRef.SetAlpha, frameRef, 0)
             end
@@ -253,6 +490,7 @@ local function applyBlizzardWidgetVisibility()
                 pcall(frameRef.Hide, frameRef)
             end
         else
+            setRegionVisibility(frameRef, true, 0, {})
             if frameRef.SetAlpha then
                 pcall(frameRef.SetAlpha, frameRef, 1)
             end
@@ -261,6 +499,47 @@ local function applyBlizzardWidgetVisibility()
             end
         end
     end
+
+    local function applyNamedSceneVisibility(frameName)
+        local frameRef = _G[frameName]
+        if not frameRef then
+            return
+        end
+
+        if db.hideBlizzardPreyWidget then
+            stopFrameAnimations(frameRef, 0, {})
+            setRegionVisibility(frameRef, false, 0, {})
+            if frameRef.SetAlpha then
+                pcall(frameRef.SetAlpha, frameRef, 0)
+            end
+            if frameRef.Hide then
+                pcall(frameRef.Hide, frameRef)
+            end
+        else
+            setRegionVisibility(frameRef, true, 0, {})
+            if frameRef.SetAlpha then
+                pcall(frameRef.SetAlpha, frameRef, 1)
+            end
+            if frameRef.Show then
+                pcall(frameRef.Show, frameRef)
+            end
+        end
+    end
+
+    for frameRef in pairs(trackedPreyFrames) do
+        applyVisibility(frameRef)
+    end
+
+    for frameRef in pairs(trackedPreyVisualFrames) do
+        applyVisibility(frameRef)
+    end
+
+    applyNamedSceneVisibility("UIWidgetBelowMinimapContainerFrame")
+    applyNamedSceneVisibility("UIWidgetBelowMinimapContainerFrameFrontModelScene")
+    applyNamedSceneVisibility("UIWidgetBelowMinimapContainerFrameBackModelScene")
+    applyNamedSceneVisibility("UIWidgetPowerBarContainerFrame")
+    applyNamedSceneVisibility("UIWidgetPowerBarContainerFrameFrontModelScene")
+    applyNamedSceneVisibility("UIWidgetPowerBarContainerFrameBackModelScene")
 end
 
 local function extractProgressPercentFromInfo(info, tooltipText)
@@ -559,6 +838,495 @@ local function extractStageDescriptionFromWidgetFrame()
     end
 
     return nil
+end
+
+local function debugSafeName(obj)
+    if not obj or not obj.GetName then
+        return nil
+    end
+
+    local okName, name = pcall(obj.GetName, obj)
+    if okName and type(name) == "string" and name ~= "" then
+        return name
+    end
+    return nil
+end
+
+local function debugSafeObjectType(obj)
+    if not obj or not obj.GetObjectType then
+        return nil
+    end
+
+    local okType, objectType = pcall(obj.GetObjectType, obj)
+    if okType and type(objectType) == "string" then
+        return objectType
+    end
+    return nil
+end
+
+local function printTrackedPreyFrameTree()
+    captureLivePreyHuntFrames()
+
+    local function printLine(prefix, obj)
+        local name = debugSafeName(obj) or "<unnamed>"
+        local objectType = debugSafeObjectType(obj) or type(obj)
+        local shown = obj and obj.IsShown and obj:IsShown() and "shown" or "hidden"
+        print(string.format("|cffd6a800EasyPreyProgress|r %s%s [%s, %s]", prefix, name, objectType, shown))
+    end
+
+    local function walk(frameRef, depth, visited)
+        if not frameRef or (depth or 0) > 4 then
+            return
+        end
+
+        visited = visited or {}
+        if visited[frameRef] then
+            return
+        end
+        visited[frameRef] = true
+
+        local prefix = string.rep("  ", depth or 0)
+        printLine(prefix, frameRef)
+
+        if frameRef.GetRegions then
+            local okRegions, regions = pcall(function()
+                return { frameRef:GetRegions() }
+            end)
+            if okRegions and type(regions) == "table" then
+                for _, region in ipairs(regions) do
+                    local regionName = debugSafeName(region)
+                    local objectType = debugSafeObjectType(region)
+                    if regionName or objectType == "Texture" or objectType == "FontString" then
+                        printLine(prefix .. "  - ", region)
+                    end
+                end
+            end
+        end
+
+        if frameRef.GetChildren then
+            local okChildren, children = pcall(function()
+                return { frameRef:GetChildren() }
+            end)
+            if okChildren and type(children) == "table" then
+                for _, child in ipairs(children) do
+                    walk(child, (depth or 0) + 1, visited)
+                end
+            end
+        end
+    end
+
+    local foundAny = false
+    for frameRef in pairs(trackedPreyFrames) do
+        foundAny = true
+        walk(frameRef, 0, {})
+    end
+    for frameRef in pairs(trackedPreyVisualFrames) do
+        foundAny = true
+        walk(frameRef, 0, {})
+    end
+
+    if not foundAny then
+        print("|cffd6a800EasyPreyProgress|r no tracked prey frames found")
+    end
+end
+
+local function printVisibleUiFrames()
+    local root = _G.UIParent
+    if not root or not root.GetChildren then
+        print("|cffd6a800EasyPreyProgress|r UIParent not available")
+        return
+    end
+
+    local function safeShown(obj)
+        if not obj or not obj.IsShown then
+            return false
+        end
+        local okShown, shown = pcall(obj.IsShown, obj)
+        return okShown and shown == true
+    end
+
+    local function safeSize(obj)
+        if not obj or not obj.GetSize then
+            return nil, nil
+        end
+        local okSize, w, h = pcall(obj.GetSize, obj)
+        if okSize then
+            return w, h
+        end
+        return nil, nil
+    end
+
+    local seen = {}
+    local function walk(frameRef, depth)
+        if not frameRef or depth > 3 or seen[frameRef] then
+            return
+        end
+        seen[frameRef] = true
+
+        if safeShown(frameRef) then
+            local name = debugSafeName(frameRef) or "<unnamed>"
+            local objectType = debugSafeObjectType(frameRef) or type(frameRef)
+            local w, h = safeSize(frameRef)
+            print(string.format("|cffd6a800EasyPreyProgress visible|r %s [%s, %.0fx%.0f]", name, objectType, w or 0, h or 0))
+        end
+
+        if frameRef.GetChildren then
+            local okChildren, children = pcall(function()
+                return { frameRef:GetChildren() }
+            end)
+            if okChildren and type(children) == "table" then
+                for _, child in ipairs(children) do
+                    walk(child, depth + 1)
+                end
+            end
+        end
+    end
+
+    walk(root, 0)
+end
+
+local function printVisibleUiIcons()
+    local root = _G.UIParent
+    if not root or not root.GetChildren then
+        print("|cffd6a800EasyPreyProgress|r UIParent not available")
+        return
+    end
+
+    local function safeShown(obj)
+        if not obj or not obj.IsShown then
+            return false
+        end
+        local okShown, shown = pcall(obj.IsShown, obj)
+        return okShown and shown == true
+    end
+
+    local function safeSize(obj)
+        if not obj or not obj.GetSize then
+            return nil, nil
+        end
+        local okSize, w, h = pcall(obj.GetSize, obj)
+        if okSize then
+            return w, h
+        end
+        return nil, nil
+    end
+
+    local function safeCenter(obj)
+        if not obj or not obj.GetCenter then
+            return nil, nil
+        end
+        local okCenter, x, y = pcall(obj.GetCenter, obj)
+        if okCenter then
+            return x, y
+        end
+        return nil, nil
+    end
+
+    local function firstRegionSummary(frameRef)
+        if not frameRef or not frameRef.GetRegions then
+            return nil
+        end
+        local okRegions, regions = pcall(function()
+            return { frameRef:GetRegions() }
+        end)
+        if not okRegions or type(regions) ~= "table" then
+            return nil
+        end
+
+        for _, region in ipairs(regions) do
+            local objectType = debugSafeObjectType(region)
+            if objectType == "Texture" then
+                local regionName = debugSafeName(region) or "<unnamed>"
+                local atlas = nil
+                if region.GetAtlas then
+                    local okAtlas, resolvedAtlas = pcall(region.GetAtlas, region)
+                    if okAtlas and type(resolvedAtlas) == "string" and resolvedAtlas ~= "" then
+                        atlas = resolvedAtlas
+                    end
+                end
+                local texture = nil
+                if region.GetTexture then
+                    local okTexture, resolvedTexture = pcall(region.GetTexture, region)
+                    if okTexture and resolvedTexture then
+                        texture = tostring(resolvedTexture)
+                    end
+                end
+                return string.format("%s atlas=%s texture=%s", regionName, atlas or "-", texture or "-")
+            end
+        end
+
+        return nil
+    end
+
+    local seen = {}
+    local matches = 0
+    local function walk(frameRef, depth)
+        if not frameRef or depth > 4 or seen[frameRef] then
+            return
+        end
+        seen[frameRef] = true
+
+        local objectType = debugSafeObjectType(frameRef)
+        local name = debugSafeName(frameRef)
+        local w, h = safeSize(frameRef)
+        local x, y = safeCenter(frameRef)
+
+        local smallEnough = (w and h and w > 0 and h > 0 and w <= 120 and h <= 120)
+        local unnamed = name == nil
+        local interestingType = objectType == "Button" or objectType == "Frame"
+        if interestingType and unnamed and smallEnough and safeShown(frameRef) then
+            matches = matches + 1
+            print(string.format(
+                "|cffd6a800EasyPreyProgress icon|r #%d <unnamed> [%s, %.0fx%.0f, center=%.0f,%.0f] %s",
+                matches,
+                objectType or "?",
+                w or 0,
+                h or 0,
+                x or 0,
+                y or 0,
+                firstRegionSummary(frameRef) or "no texture summary"
+            ))
+        end
+
+        if frameRef.GetChildren then
+            local okChildren, children = pcall(function()
+                return { frameRef:GetChildren() }
+            end)
+            if okChildren and type(children) == "table" then
+                for _, child in ipairs(children) do
+                    walk(child, depth + 1)
+                end
+            end
+        end
+    end
+
+    walk(root, 0)
+    if matches == 0 then
+        print("|cffd6a800EasyPreyProgress|r no matching visible icon frames found")
+    end
+end
+
+local function printVisibleFramesNearCursor()
+    local root = _G.UIParent
+    local cursorX, cursorY = _G.GetCursorPosition()
+    if not root or not root.GetChildren or not cursorX or not cursorY then
+        print("|cffd6a800EasyPreyProgress|r cursor inspection unavailable")
+        return
+    end
+
+    local rootScale = (root.GetEffectiveScale and root:GetEffectiveScale()) or 1
+    cursorX = cursorX / rootScale
+    cursorY = cursorY / rootScale
+
+    local function safeShown(obj)
+        if not obj or not obj.IsShown then
+            return false
+        end
+        local okShown, shown = pcall(obj.IsShown, obj)
+        return okShown and shown == true
+    end
+
+    local function safeRect(obj)
+        if not obj or not obj.GetLeft or not obj.GetRight or not obj.GetTop or not obj.GetBottom then
+            return nil, nil, nil, nil
+        end
+        local okLeft, left = pcall(obj.GetLeft, obj)
+        local okRight, right = pcall(obj.GetRight, obj)
+        local okTop, top = pcall(obj.GetTop, obj)
+        local okBottom, bottom = pcall(obj.GetBottom, obj)
+        if okLeft and okRight and okTop and okBottom then
+            return left, right, top, bottom
+        end
+        return nil, nil, nil, nil
+    end
+
+    local function firstRegionSummary(frameRef)
+        if not frameRef or not frameRef.GetRegions then
+            return nil
+        end
+        local okRegions, regions = pcall(function()
+            return { frameRef:GetRegions() }
+        end)
+        if not okRegions or type(regions) ~= "table" then
+            return nil
+        end
+
+        for _, region in ipairs(regions) do
+            local objectType = debugSafeObjectType(region)
+            if objectType == "Texture" then
+                local atlas = nil
+                if region.GetAtlas then
+                    local okAtlas, resolvedAtlas = pcall(region.GetAtlas, region)
+                    if okAtlas and type(resolvedAtlas) == "string" and resolvedAtlas ~= "" then
+                        atlas = resolvedAtlas
+                    end
+                end
+                local texture = nil
+                if region.GetTexture then
+                    local okTexture, resolvedTexture = pcall(region.GetTexture, region)
+                    if okTexture and resolvedTexture then
+                        texture = tostring(resolvedTexture)
+                    end
+                end
+                return string.format("atlas=%s texture=%s", atlas or "-", texture or "-")
+            end
+        end
+
+        return "no texture summary"
+    end
+
+    local seen = {}
+    local matches = 0
+    local function walk(frameRef, depth)
+        if not frameRef or depth > 4 or seen[frameRef] then
+            return
+        end
+        seen[frameRef] = true
+
+        if safeShown(frameRef) then
+            local left, right, top, bottom = safeRect(frameRef)
+            if left and right and top and bottom
+                and cursorX >= left and cursorX <= right
+                and cursorY >= bottom and cursorY <= top
+            then
+                matches = matches + 1
+                local name = debugSafeName(frameRef) or "<unnamed>"
+                local objectType = debugSafeObjectType(frameRef) or type(frameRef)
+                print(string.format(
+                    "|cffd6a800EasyPreyProgress cursor|r #%d %s [%s] %s",
+                    matches,
+                    name,
+                    objectType,
+                    firstRegionSummary(frameRef)
+                ))
+            end
+        end
+
+        if frameRef.GetChildren then
+            local okChildren, children = pcall(function()
+                return { frameRef:GetChildren() }
+            end)
+            if okChildren and type(children) == "table" then
+                for _, child in ipairs(children) do
+                    walk(child, depth + 1)
+                end
+            end
+        end
+    end
+
+    walk(root, 0)
+    if matches == 0 then
+        print("|cffd6a800EasyPreyProgress|r no visible frames under cursor")
+    end
+end
+
+local function printTimerTrackerTree()
+    local tracker = _G.TimerTracker
+    if not tracker then
+        print("|cffd6a800EasyPreyProgress|r TimerTracker not found")
+        return
+    end
+
+    local function safeShown(obj)
+        if not obj or not obj.IsShown then
+            return false
+        end
+        local okShown, shown = pcall(obj.IsShown, obj)
+        return okShown and shown == true
+    end
+
+    local function firstRegionSummary(frameRef)
+        if not frameRef or not frameRef.GetRegions then
+            return "no texture summary"
+        end
+        local okRegions, regions = pcall(function()
+            return { frameRef:GetRegions() }
+        end)
+        if not okRegions or type(regions) ~= "table" then
+            return "no texture summary"
+        end
+
+        for _, region in ipairs(regions) do
+            local objectType = debugSafeObjectType(region)
+            if objectType == "Texture" then
+                local atlas = nil
+                if region.GetAtlas then
+                    local okAtlas, resolvedAtlas = pcall(region.GetAtlas, region)
+                    if okAtlas and type(resolvedAtlas) == "string" and resolvedAtlas ~= "" then
+                        atlas = resolvedAtlas
+                    end
+                end
+                local texture = nil
+                if region.GetTexture then
+                    local okTexture, resolvedTexture = pcall(region.GetTexture, region)
+                    if okTexture and resolvedTexture then
+                        texture = tostring(resolvedTexture)
+                    end
+                end
+                return string.format("atlas=%s texture=%s", atlas or "-", texture or "-")
+            end
+        end
+
+        return "no texture summary"
+    end
+
+    local seen = {}
+    local function walk(frameRef, depth)
+        if not frameRef or depth > 5 or seen[frameRef] then
+            return
+        end
+        seen[frameRef] = true
+
+        local prefix = string.rep("  ", depth)
+        local name = debugSafeName(frameRef) or "<unnamed>"
+        local objectType = debugSafeObjectType(frameRef) or type(frameRef)
+        local shown = safeShown(frameRef) and "shown" or "hidden"
+        print(string.format("|cffd6a800EasyPreyProgress timer|r %s%s [%s, %s] %s", prefix, name, objectType, shown, firstRegionSummary(frameRef)))
+
+        if frameRef.GetRegions then
+            local okRegions, regions = pcall(function()
+                return { frameRef:GetRegions() }
+            end)
+            if okRegions and type(regions) == "table" then
+                for _, region in ipairs(regions) do
+                    local regionName = debugSafeName(region) or "<unnamed>"
+                    local regionType = debugSafeObjectType(region) or type(region)
+                    local summary = "no texture summary"
+                    if regionType == "Texture" then
+                        local atlas = nil
+                        if region.GetAtlas then
+                            local okAtlas, resolvedAtlas = pcall(region.GetAtlas, region)
+                            if okAtlas and type(resolvedAtlas) == "string" and resolvedAtlas ~= "" then
+                                atlas = resolvedAtlas
+                            end
+                        end
+                        local texture = nil
+                        if region.GetTexture then
+                            local okTexture, resolvedTexture = pcall(region.GetTexture, region)
+                            if okTexture and resolvedTexture then
+                                texture = tostring(resolvedTexture)
+                            end
+                        end
+                        summary = string.format("atlas=%s texture=%s", atlas or "-", texture or "-")
+                    end
+                    print(string.format("|cffd6a800EasyPreyProgress timer|r %s  - %s [%s] %s", prefix, regionName, regionType, summary))
+                end
+            end
+        end
+
+        if frameRef.GetChildren then
+            local okChildren, children = pcall(function()
+                return { frameRef:GetChildren() }
+            end)
+            if okChildren and type(children) == "table" then
+                for _, child in ipairs(children) do
+                    walk(child, depth + 1)
+                end
+            end
+        end
+    end
+
+    walk(tracker, 0)
 end
 
 local function readPreyFieldsFromFrame(frameRef)
@@ -1070,8 +1838,18 @@ SlashCmdList.EASYPREYPROGRESS = function(msg)
         else
             print("|cffd6a800EasyPreyProgress|r geen trap-tekst gevonden op widget of objectives")
         end
+    elseif msg == "inspecthide" then
+        printTrackedPreyFrameTree()
+    elseif msg == "inspectvisible" then
+        printVisibleUiFrames()
+    elseif msg == "inspecticons" then
+        printVisibleUiIcons()
+    elseif msg == "inspectcursor" then
+        printVisibleFramesNearCursor()
+    elseif msg == "inspecttimer" then
+        printTimerTrackerTree()
     else
-        print("|cffd6a800EasyPreyProgress|r commands: /epp lock, /epp unlock, /epp show, /epp hide, /epp reset, /epp zone, /epp blizz, /epp debug, /epp tooltip, /epp traptext")
+        print("|cffd6a800EasyPreyProgress|r commands: /epp lock, /epp unlock, /epp show, /epp hide, /epp reset, /epp zone, /epp blizz, /epp debug, /epp tooltip, /epp traptext, /epp inspecthide, /epp inspectvisible, /epp inspecticons, /epp inspectcursor, /epp inspecttimer")
     end
 
     if addon.frame then

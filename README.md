@@ -41,4 +41,4 @@ It is designed to stay readable during normal gameplay, avoid unnecessary clutte
 
 ## Version
 
-Current release: `1.0.0`
+Current release: `1.0.1`
