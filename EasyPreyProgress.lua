@@ -16,8 +16,13 @@ local DEFAULTS = {
     point = { anchor = "CENTER", relativePoint = "CENTER", x = 0, y = 320 },
     width = 220,
     height = 20,
-    locked = false,
+    scale = 1,
+    theme = "blizzard",
+    showTitle = true,
+    showPercentText = true,
+    showTrapText = true,
     shown = true,
+    showWithoutActivePrey = false,
     onlyShowInPreyZone = true,
     hideBlizzardPreyWidget = true,
 }
@@ -50,14 +55,60 @@ local STAGE_GLOSS_COLORS = {
     [4] = { 0.84, 0.95, 0.86, 0.14 },
 }
 
+local THEMES = {
+    blizzard = {
+        label = "Blizzard Gold",
+        frameBg = { 0.02, 0.02, 0.03, 0.78 },
+        frameBorder = { 0.56, 0.43, 0.18, 0.92 },
+        panelShade = { 0.09, 0.08, 0.06, 0.35 },
+        title = { 0.94, 0.78, 0.28, 0.96 },
+        shellBg = { 0.05, 0.04, 0.03, 0.92 },
+        shellBorder = { 0.36, 0.28, 0.12, 0.95 },
+        barBg = { 0.10, 0.06, 0.06, 0.92 },
+        percent = { 1.00, 0.96, 0.88, 1.00 },
+        stage = { 0.86, 0.78, 0.58, 0.92 },
+        trap = { 0.82, 0.68, 0.30, 0.88 },
+        innerLine = { 1.00, 0.95, 0.80, 0.18 },
+    },
+    dark = {
+        label = "Dark Minimal",
+        frameBg = { 0.01, 0.01, 0.015, 0.82 },
+        frameBorder = { 0.28, 0.28, 0.30, 0.80 },
+        panelShade = { 0.04, 0.04, 0.05, 0.34 },
+        title = { 0.82, 0.82, 0.78, 0.92 },
+        shellBg = { 0.03, 0.03, 0.035, 0.94 },
+        shellBorder = { 0.20, 0.20, 0.22, 0.92 },
+        barBg = { 0.06, 0.06, 0.07, 0.94 },
+        percent = { 0.95, 0.95, 0.92, 1.00 },
+        stage = { 0.74, 0.74, 0.70, 0.92 },
+        trap = { 0.72, 0.62, 0.42, 0.86 },
+        innerLine = { 0.85, 0.85, 0.80, 0.10 },
+    },
+    predator = {
+        label = "Predator Red",
+        frameBg = { 0.04, 0.01, 0.01, 0.82 },
+        frameBorder = { 0.54, 0.16, 0.10, 0.92 },
+        panelShade = { 0.12, 0.03, 0.02, 0.36 },
+        title = { 1.00, 0.55, 0.28, 0.96 },
+        shellBg = { 0.07, 0.02, 0.015, 0.94 },
+        shellBorder = { 0.42, 0.12, 0.08, 0.95 },
+        barBg = { 0.13, 0.03, 0.03, 0.94 },
+        percent = { 1.00, 0.92, 0.84, 1.00 },
+        stage = { 0.90, 0.68, 0.50, 0.92 },
+        trap = { 0.88, 0.52, 0.28, 0.88 },
+        innerLine = { 1.00, 0.62, 0.35, 0.15 },
+    },
+}
+
 local widgetHookInstalled = false
 local preyWidgetCache = nil
 local trackedPreyFrame = nil
 local trackedPreyFrames = setmetatable({}, { __mode = "k" })
 local trackedPreyVisualFrames = setmetatable({}, { __mode = "k" })
-local debugEnabled = false
 local hookedPreyFrames = setmetatable({}, { __mode = "k" })
 local ensurePreyWidgetHideHook
+local optionsPanel = nil
+local optionsCategory = nil
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -86,6 +137,35 @@ local function getDB()
     EasyPreyProgressDB = EasyPreyProgressDB or {}
     mergeDefaults(EasyPreyProgressDB, DEFAULTS)
     return EasyPreyProgressDB
+end
+
+local function getTheme()
+    local db = getDB()
+    return THEMES[db.theme] or THEMES.blizzard
+end
+
+local function setColorTexture(texture, color)
+    if texture and color then
+        texture:SetColorTexture(color[1], color[2], color[3], color[4] or 1)
+    end
+end
+
+local function setTextColor(fontString, color)
+    if fontString and color then
+        fontString:SetTextColor(color[1], color[2], color[3], color[4] or 1)
+    end
+end
+
+local function setBackdropColor(frame, color)
+    if frame and frame.SetBackdropColor and color then
+        frame:SetBackdropColor(color[1], color[2], color[3], color[4] or 1)
+    end
+end
+
+local function setBackdropBorderColor(frame, color)
+    if frame and frame.SetBackdropBorderColor and color then
+        frame:SetBackdropBorderColor(color[1], color[2], color[3], color[4] or 1)
+    end
 end
 
 local function getActivePreyQuestID()
@@ -840,495 +920,6 @@ local function extractStageDescriptionFromWidgetFrame()
     return nil
 end
 
-local function debugSafeName(obj)
-    if not obj or not obj.GetName then
-        return nil
-    end
-
-    local okName, name = pcall(obj.GetName, obj)
-    if okName and type(name) == "string" and name ~= "" then
-        return name
-    end
-    return nil
-end
-
-local function debugSafeObjectType(obj)
-    if not obj or not obj.GetObjectType then
-        return nil
-    end
-
-    local okType, objectType = pcall(obj.GetObjectType, obj)
-    if okType and type(objectType) == "string" then
-        return objectType
-    end
-    return nil
-end
-
-local function printTrackedPreyFrameTree()
-    captureLivePreyHuntFrames()
-
-    local function printLine(prefix, obj)
-        local name = debugSafeName(obj) or "<unnamed>"
-        local objectType = debugSafeObjectType(obj) or type(obj)
-        local shown = obj and obj.IsShown and obj:IsShown() and "shown" or "hidden"
-        print(string.format("|cffd6a800EasyPreyProgress|r %s%s [%s, %s]", prefix, name, objectType, shown))
-    end
-
-    local function walk(frameRef, depth, visited)
-        if not frameRef or (depth or 0) > 4 then
-            return
-        end
-
-        visited = visited or {}
-        if visited[frameRef] then
-            return
-        end
-        visited[frameRef] = true
-
-        local prefix = string.rep("  ", depth or 0)
-        printLine(prefix, frameRef)
-
-        if frameRef.GetRegions then
-            local okRegions, regions = pcall(function()
-                return { frameRef:GetRegions() }
-            end)
-            if okRegions and type(regions) == "table" then
-                for _, region in ipairs(regions) do
-                    local regionName = debugSafeName(region)
-                    local objectType = debugSafeObjectType(region)
-                    if regionName or objectType == "Texture" or objectType == "FontString" then
-                        printLine(prefix .. "  - ", region)
-                    end
-                end
-            end
-        end
-
-        if frameRef.GetChildren then
-            local okChildren, children = pcall(function()
-                return { frameRef:GetChildren() }
-            end)
-            if okChildren and type(children) == "table" then
-                for _, child in ipairs(children) do
-                    walk(child, (depth or 0) + 1, visited)
-                end
-            end
-        end
-    end
-
-    local foundAny = false
-    for frameRef in pairs(trackedPreyFrames) do
-        foundAny = true
-        walk(frameRef, 0, {})
-    end
-    for frameRef in pairs(trackedPreyVisualFrames) do
-        foundAny = true
-        walk(frameRef, 0, {})
-    end
-
-    if not foundAny then
-        print("|cffd6a800EasyPreyProgress|r no tracked prey frames found")
-    end
-end
-
-local function printVisibleUiFrames()
-    local root = _G.UIParent
-    if not root or not root.GetChildren then
-        print("|cffd6a800EasyPreyProgress|r UIParent not available")
-        return
-    end
-
-    local function safeShown(obj)
-        if not obj or not obj.IsShown then
-            return false
-        end
-        local okShown, shown = pcall(obj.IsShown, obj)
-        return okShown and shown == true
-    end
-
-    local function safeSize(obj)
-        if not obj or not obj.GetSize then
-            return nil, nil
-        end
-        local okSize, w, h = pcall(obj.GetSize, obj)
-        if okSize then
-            return w, h
-        end
-        return nil, nil
-    end
-
-    local seen = {}
-    local function walk(frameRef, depth)
-        if not frameRef or depth > 3 or seen[frameRef] then
-            return
-        end
-        seen[frameRef] = true
-
-        if safeShown(frameRef) then
-            local name = debugSafeName(frameRef) or "<unnamed>"
-            local objectType = debugSafeObjectType(frameRef) or type(frameRef)
-            local w, h = safeSize(frameRef)
-            print(string.format("|cffd6a800EasyPreyProgress visible|r %s [%s, %.0fx%.0f]", name, objectType, w or 0, h or 0))
-        end
-
-        if frameRef.GetChildren then
-            local okChildren, children = pcall(function()
-                return { frameRef:GetChildren() }
-            end)
-            if okChildren and type(children) == "table" then
-                for _, child in ipairs(children) do
-                    walk(child, depth + 1)
-                end
-            end
-        end
-    end
-
-    walk(root, 0)
-end
-
-local function printVisibleUiIcons()
-    local root = _G.UIParent
-    if not root or not root.GetChildren then
-        print("|cffd6a800EasyPreyProgress|r UIParent not available")
-        return
-    end
-
-    local function safeShown(obj)
-        if not obj or not obj.IsShown then
-            return false
-        end
-        local okShown, shown = pcall(obj.IsShown, obj)
-        return okShown and shown == true
-    end
-
-    local function safeSize(obj)
-        if not obj or not obj.GetSize then
-            return nil, nil
-        end
-        local okSize, w, h = pcall(obj.GetSize, obj)
-        if okSize then
-            return w, h
-        end
-        return nil, nil
-    end
-
-    local function safeCenter(obj)
-        if not obj or not obj.GetCenter then
-            return nil, nil
-        end
-        local okCenter, x, y = pcall(obj.GetCenter, obj)
-        if okCenter then
-            return x, y
-        end
-        return nil, nil
-    end
-
-    local function firstRegionSummary(frameRef)
-        if not frameRef or not frameRef.GetRegions then
-            return nil
-        end
-        local okRegions, regions = pcall(function()
-            return { frameRef:GetRegions() }
-        end)
-        if not okRegions or type(regions) ~= "table" then
-            return nil
-        end
-
-        for _, region in ipairs(regions) do
-            local objectType = debugSafeObjectType(region)
-            if objectType == "Texture" then
-                local regionName = debugSafeName(region) or "<unnamed>"
-                local atlas = nil
-                if region.GetAtlas then
-                    local okAtlas, resolvedAtlas = pcall(region.GetAtlas, region)
-                    if okAtlas and type(resolvedAtlas) == "string" and resolvedAtlas ~= "" then
-                        atlas = resolvedAtlas
-                    end
-                end
-                local texture = nil
-                if region.GetTexture then
-                    local okTexture, resolvedTexture = pcall(region.GetTexture, region)
-                    if okTexture and resolvedTexture then
-                        texture = tostring(resolvedTexture)
-                    end
-                end
-                return string.format("%s atlas=%s texture=%s", regionName, atlas or "-", texture or "-")
-            end
-        end
-
-        return nil
-    end
-
-    local seen = {}
-    local matches = 0
-    local function walk(frameRef, depth)
-        if not frameRef or depth > 4 or seen[frameRef] then
-            return
-        end
-        seen[frameRef] = true
-
-        local objectType = debugSafeObjectType(frameRef)
-        local name = debugSafeName(frameRef)
-        local w, h = safeSize(frameRef)
-        local x, y = safeCenter(frameRef)
-
-        local smallEnough = (w and h and w > 0 and h > 0 and w <= 120 and h <= 120)
-        local unnamed = name == nil
-        local interestingType = objectType == "Button" or objectType == "Frame"
-        if interestingType and unnamed and smallEnough and safeShown(frameRef) then
-            matches = matches + 1
-            print(string.format(
-                "|cffd6a800EasyPreyProgress icon|r #%d <unnamed> [%s, %.0fx%.0f, center=%.0f,%.0f] %s",
-                matches,
-                objectType or "?",
-                w or 0,
-                h or 0,
-                x or 0,
-                y or 0,
-                firstRegionSummary(frameRef) or "no texture summary"
-            ))
-        end
-
-        if frameRef.GetChildren then
-            local okChildren, children = pcall(function()
-                return { frameRef:GetChildren() }
-            end)
-            if okChildren and type(children) == "table" then
-                for _, child in ipairs(children) do
-                    walk(child, depth + 1)
-                end
-            end
-        end
-    end
-
-    walk(root, 0)
-    if matches == 0 then
-        print("|cffd6a800EasyPreyProgress|r no matching visible icon frames found")
-    end
-end
-
-local function printVisibleFramesNearCursor()
-    local root = _G.UIParent
-    local cursorX, cursorY = _G.GetCursorPosition()
-    if not root or not root.GetChildren or not cursorX or not cursorY then
-        print("|cffd6a800EasyPreyProgress|r cursor inspection unavailable")
-        return
-    end
-
-    local rootScale = (root.GetEffectiveScale and root:GetEffectiveScale()) or 1
-    cursorX = cursorX / rootScale
-    cursorY = cursorY / rootScale
-
-    local function safeShown(obj)
-        if not obj or not obj.IsShown then
-            return false
-        end
-        local okShown, shown = pcall(obj.IsShown, obj)
-        return okShown and shown == true
-    end
-
-    local function safeRect(obj)
-        if not obj or not obj.GetLeft or not obj.GetRight or not obj.GetTop or not obj.GetBottom then
-            return nil, nil, nil, nil
-        end
-        local okLeft, left = pcall(obj.GetLeft, obj)
-        local okRight, right = pcall(obj.GetRight, obj)
-        local okTop, top = pcall(obj.GetTop, obj)
-        local okBottom, bottom = pcall(obj.GetBottom, obj)
-        if okLeft and okRight and okTop and okBottom then
-            return left, right, top, bottom
-        end
-        return nil, nil, nil, nil
-    end
-
-    local function firstRegionSummary(frameRef)
-        if not frameRef or not frameRef.GetRegions then
-            return nil
-        end
-        local okRegions, regions = pcall(function()
-            return { frameRef:GetRegions() }
-        end)
-        if not okRegions or type(regions) ~= "table" then
-            return nil
-        end
-
-        for _, region in ipairs(regions) do
-            local objectType = debugSafeObjectType(region)
-            if objectType == "Texture" then
-                local atlas = nil
-                if region.GetAtlas then
-                    local okAtlas, resolvedAtlas = pcall(region.GetAtlas, region)
-                    if okAtlas and type(resolvedAtlas) == "string" and resolvedAtlas ~= "" then
-                        atlas = resolvedAtlas
-                    end
-                end
-                local texture = nil
-                if region.GetTexture then
-                    local okTexture, resolvedTexture = pcall(region.GetTexture, region)
-                    if okTexture and resolvedTexture then
-                        texture = tostring(resolvedTexture)
-                    end
-                end
-                return string.format("atlas=%s texture=%s", atlas or "-", texture or "-")
-            end
-        end
-
-        return "no texture summary"
-    end
-
-    local seen = {}
-    local matches = 0
-    local function walk(frameRef, depth)
-        if not frameRef or depth > 4 or seen[frameRef] then
-            return
-        end
-        seen[frameRef] = true
-
-        if safeShown(frameRef) then
-            local left, right, top, bottom = safeRect(frameRef)
-            if left and right and top and bottom
-                and cursorX >= left and cursorX <= right
-                and cursorY >= bottom and cursorY <= top
-            then
-                matches = matches + 1
-                local name = debugSafeName(frameRef) or "<unnamed>"
-                local objectType = debugSafeObjectType(frameRef) or type(frameRef)
-                print(string.format(
-                    "|cffd6a800EasyPreyProgress cursor|r #%d %s [%s] %s",
-                    matches,
-                    name,
-                    objectType,
-                    firstRegionSummary(frameRef)
-                ))
-            end
-        end
-
-        if frameRef.GetChildren then
-            local okChildren, children = pcall(function()
-                return { frameRef:GetChildren() }
-            end)
-            if okChildren and type(children) == "table" then
-                for _, child in ipairs(children) do
-                    walk(child, depth + 1)
-                end
-            end
-        end
-    end
-
-    walk(root, 0)
-    if matches == 0 then
-        print("|cffd6a800EasyPreyProgress|r no visible frames under cursor")
-    end
-end
-
-local function printTimerTrackerTree()
-    local tracker = _G.TimerTracker
-    if not tracker then
-        print("|cffd6a800EasyPreyProgress|r TimerTracker not found")
-        return
-    end
-
-    local function safeShown(obj)
-        if not obj or not obj.IsShown then
-            return false
-        end
-        local okShown, shown = pcall(obj.IsShown, obj)
-        return okShown and shown == true
-    end
-
-    local function firstRegionSummary(frameRef)
-        if not frameRef or not frameRef.GetRegions then
-            return "no texture summary"
-        end
-        local okRegions, regions = pcall(function()
-            return { frameRef:GetRegions() }
-        end)
-        if not okRegions or type(regions) ~= "table" then
-            return "no texture summary"
-        end
-
-        for _, region in ipairs(regions) do
-            local objectType = debugSafeObjectType(region)
-            if objectType == "Texture" then
-                local atlas = nil
-                if region.GetAtlas then
-                    local okAtlas, resolvedAtlas = pcall(region.GetAtlas, region)
-                    if okAtlas and type(resolvedAtlas) == "string" and resolvedAtlas ~= "" then
-                        atlas = resolvedAtlas
-                    end
-                end
-                local texture = nil
-                if region.GetTexture then
-                    local okTexture, resolvedTexture = pcall(region.GetTexture, region)
-                    if okTexture and resolvedTexture then
-                        texture = tostring(resolvedTexture)
-                    end
-                end
-                return string.format("atlas=%s texture=%s", atlas or "-", texture or "-")
-            end
-        end
-
-        return "no texture summary"
-    end
-
-    local seen = {}
-    local function walk(frameRef, depth)
-        if not frameRef or depth > 5 or seen[frameRef] then
-            return
-        end
-        seen[frameRef] = true
-
-        local prefix = string.rep("  ", depth)
-        local name = debugSafeName(frameRef) or "<unnamed>"
-        local objectType = debugSafeObjectType(frameRef) or type(frameRef)
-        local shown = safeShown(frameRef) and "shown" or "hidden"
-        print(string.format("|cffd6a800EasyPreyProgress timer|r %s%s [%s, %s] %s", prefix, name, objectType, shown, firstRegionSummary(frameRef)))
-
-        if frameRef.GetRegions then
-            local okRegions, regions = pcall(function()
-                return { frameRef:GetRegions() }
-            end)
-            if okRegions and type(regions) == "table" then
-                for _, region in ipairs(regions) do
-                    local regionName = debugSafeName(region) or "<unnamed>"
-                    local regionType = debugSafeObjectType(region) or type(region)
-                    local summary = "no texture summary"
-                    if regionType == "Texture" then
-                        local atlas = nil
-                        if region.GetAtlas then
-                            local okAtlas, resolvedAtlas = pcall(region.GetAtlas, region)
-                            if okAtlas and type(resolvedAtlas) == "string" and resolvedAtlas ~= "" then
-                                atlas = resolvedAtlas
-                            end
-                        end
-                        local texture = nil
-                        if region.GetTexture then
-                            local okTexture, resolvedTexture = pcall(region.GetTexture, region)
-                            if okTexture and resolvedTexture then
-                                texture = tostring(resolvedTexture)
-                            end
-                        end
-                        summary = string.format("atlas=%s texture=%s", atlas or "-", texture or "-")
-                    end
-                    print(string.format("|cffd6a800EasyPreyProgress timer|r %s  - %s [%s] %s", prefix, regionName, regionType, summary))
-                end
-            end
-        end
-
-        if frameRef.GetChildren then
-            local okChildren, children = pcall(function()
-                return { frameRef:GetChildren() }
-            end)
-            if okChildren and type(children) == "table" then
-                for _, child in ipairs(children) do
-                    walk(child, depth + 1)
-                end
-            end
-        end
-    end
-
-    walk(tracker, 0)
-end
-
 local function readPreyFieldsFromFrame(frameRef)
     if type(frameRef) ~= "table" then
         return nil
@@ -1590,6 +1181,7 @@ local function createUI()
     end
 
     local db = getDB()
+    local theme = getTheme()
 
     local frame = CreateFrame("Frame", "EasyPreyProgressFrame", UIParent, "BackdropTemplate")
     frame:SetMovable(true)
@@ -1604,18 +1196,18 @@ local function createUI()
         edgeSize = 16,
         insets = { left = 4, right = 4, top = 4, bottom = 4 },
     })
-    frame:SetBackdropColor(0.02, 0.02, 0.03, 0.78)
-    frame:SetBackdropBorderColor(0.58, 0.46, 0.20, 0.95)
+    setBackdropColor(frame, theme.frameBg)
+    setBackdropBorderColor(frame, theme.frameBorder)
 
     local panelShade = frame:CreateTexture(nil, "BACKGROUND")
     panelShade:SetPoint("TOPLEFT", frame, "TOPLEFT", 7, -7)
     panelShade:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -7, 7)
-    panelShade:SetColorTexture(0.09, 0.08, 0.06, 0.35)
+    setColorTexture(panelShade, theme.panelShade)
 
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", frame, "TOP", 0, -6)
     title:SetText("Prey Progress")
-    title:SetTextColor(0.94, 0.78, 0.28, 0.96)
+    setTextColor(title, theme.title)
 
     local barShell = CreateFrame("Frame", nil, frame, "BackdropTemplate")
     barShell:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -22)
@@ -1629,8 +1221,8 @@ local function createUI()
         edgeSize = 12,
         insets = { left = 2, right = 2, top = 2, bottom = 2 },
     })
-    barShell:SetBackdropColor(0.05, 0.04, 0.03, 0.92)
-    barShell:SetBackdropBorderColor(0.36, 0.28, 0.12, 0.95)
+    setBackdropColor(barShell, theme.shellBg)
+    setBackdropBorderColor(barShell, theme.shellBorder)
 
     local bar = CreateFrame("StatusBar", nil, barShell)
     bar:SetPoint("TOPLEFT", barShell, "TOPLEFT", 5, -5)
@@ -1644,7 +1236,7 @@ local function createUI()
 
     local background = bar:CreateTexture(nil, "BACKGROUND")
     background:SetAllPoints()
-    background:SetColorTexture(0.10, 0.06, 0.06, 0.92)
+    setColorTexture(background, theme.barBg)
 
     local barUnderGlow = bar:CreateTexture(nil, "ARTWORK")
     barUnderGlow:SetPoint("TOPLEFT", bar, "TOPLEFT", 2, -2)
@@ -1661,28 +1253,25 @@ local function createUI()
     barInnerLine:SetHeight(1)
     barInnerLine:SetPoint("TOPLEFT", bar, "TOPLEFT", 3, -3)
     barInnerLine:SetPoint("TOPRIGHT", bar, "TOPRIGHT", -3, -3)
-    barInnerLine:SetColorTexture(1, 0.95, 0.80, 0.18)
+    setColorTexture(barInnerLine, theme.innerLine)
 
     local text = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     text:SetPoint("CENTER")
-    text:SetTextColor(1, 0.96, 0.88, 1)
+    setTextColor(text, theme.percent)
 
     local stageText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     stageText:SetPoint("TOP", barShell, "BOTTOM", 0, -8)
-    stageText:SetTextColor(0.86, 0.78, 0.58, 0.92)
+    setTextColor(stageText, theme.stage)
     stageText:SetWidth(math.max(120, db.width - 28))
     stageText:SetJustifyH("CENTER")
 
     local trapText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     trapText:SetPoint("TOP", stageText, "BOTTOM", 0, -4)
-    trapText:SetTextColor(0.82, 0.68, 0.30, 0.88)
+    setTextColor(trapText, theme.trap)
     trapText:SetWidth(math.max(120, db.width - 28))
     trapText:SetJustifyH("CENTER")
 
     frame:SetScript("OnDragStart", function(self)
-        if getDB().locked then
-            return
-        end
         if not IsShiftKeyDown or not IsShiftKeyDown() then
             return
         end
@@ -1700,9 +1289,11 @@ local function createUI()
     end)
 
     addon.frame = frame
+    addon.panelShade = panelShade
     addon.title = title
     addon.barShell = barShell
     addon.bar = bar
+    addon.barBackground = background
     addon.barUnderGlow = barUnderGlow
     addon.barGloss = barGloss
     addon.barInnerLine = barInnerLine
@@ -1716,9 +1307,14 @@ end
 
 local function applyLayout()
     local db = getDB()
+    local theme = getTheme()
+    db.width = clamp(tonumber(db.width) or DEFAULTS.width, 180, 320)
+    db.scale = clamp(tonumber(db.scale) or DEFAULTS.scale, 0.75, 1.5)
+
     addon.frame:ClearAllPoints()
     addon.frame:SetPoint(db.point.anchor, UIParent, db.point.relativePoint, db.point.x, db.point.y)
     addon.frame:SetSize(db.width, db.height + 62)
+    addon.frame:SetScale(db.scale)
     addon.barShell:SetHeight(db.height)
     addon.stageText:SetWidth(math.max(120, db.width - 28))
     addon.trapText:SetWidth(math.max(120, db.width - 28))
@@ -1726,11 +1322,19 @@ local function applyLayout()
         addon.barGloss:SetHeight(math.max(4, math.floor((db.height - 6) * 0.45)))
     end
     addon.frame:SetShown(db.shown)
-    if db.locked then
-        addon.frame:SetBackdropBorderColor(0.56, 0.43, 0.18, 0.92)
-    else
-        addon.frame:SetBackdropBorderColor(0.82, 0.70, 0.32, 0.98)
-    end
+    setBackdropColor(addon.frame, theme.frameBg)
+    setBackdropBorderColor(addon.frame, theme.frameBorder)
+    setColorTexture(addon.panelShade, theme.panelShade)
+    setBackdropColor(addon.barShell, theme.shellBg)
+    setBackdropBorderColor(addon.barShell, theme.shellBorder)
+    setColorTexture(addon.barBackground, theme.barBg)
+    setColorTexture(addon.barInnerLine, theme.innerLine)
+    setTextColor(addon.title, theme.title)
+    setTextColor(addon.text, theme.percent)
+    setTextColor(addon.stageText, theme.stage)
+    setTextColor(addon.trapText, theme.trap)
+    addon.title:SetShown(db.showTitle)
+    addon.text:SetShown(db.showPercentText)
 
     applyBlizzardWidgetVisibility()
 end
@@ -1743,9 +1347,21 @@ function addon:Refresh()
     local progress = getPreyProgress()
     if not progress then
         self.bar:SetValue(0)
-        self.text:SetText("Geen actieve Prey")
-        self.stageText:SetText("Wacht op een actieve prey quest")
-        self.frame:Hide()
+        self.text:SetText(getDB().showPercentText and "0%" or "")
+        self.stageText:SetFontObject("GameFontNormalSmall")
+        self.stageText:SetText("No active Prey Hunt")
+        if getDB().showTrapText then
+            self.trapText:SetText("Hold Shift and drag to move")
+            self.trapText:Show()
+        else
+            self.trapText:SetText("")
+            self.trapText:Hide()
+        end
+        if getDB().shown and getDB().showWithoutActivePrey then
+            self.frame:Show()
+        else
+            self.frame:Hide()
+        end
         return
     end
 
@@ -1775,14 +1391,14 @@ function addon:Refresh()
     if self.barGloss then
         self.barGloss:SetColorTexture(glossColor[1], glossColor[2], glossColor[3], glossColor[4])
     end
-    self.text:SetFormattedText("%d%%", progress.percent)
+    if db.showPercentText then
+        self.text:SetFormattedText("%d%%", progress.percent)
+    else
+        self.text:SetText("")
+    end
     self.stageText:SetFontObject("GameFontNormalSmall")
     local stageLine
-    if debugEnabled then
-        stageLine = string.format("Stage %d/4 [%s]", progress.stage, progress.source or "?")
-    else
-        stageLine = string.format("Stage %d/4", progress.stage)
-    end
+    stageLine = string.format("Stage %d/4", progress.stage)
 
     self.stageText:SetText(stageLine)
     if self.stageText:GetStringWidth() > (self.stageText:GetWidth() + 4) then
@@ -1790,7 +1406,7 @@ function addon:Refresh()
         self.stageText:SetText(stageLine)
     end
 
-    if progress.nearbyTrapText and progress.nearbyTrapText ~= "" then
+    if db.showTrapText and progress.nearbyTrapText and progress.nearbyTrapText ~= "" then
         self.trapText:SetText(progress.nearbyTrapText)
         self.trapText:Show()
     else
@@ -1799,15 +1415,321 @@ function addon:Refresh()
     end
 end
 
+local function refreshOptionsPanel()
+    if not optionsPanel or not optionsPanel.controls then
+        return
+    end
+
+    local db = getDB()
+    for _, control in ipairs(optionsPanel.controls) do
+        if control.Refresh then
+            control:Refresh(db)
+        end
+    end
+end
+
+local function createOptionsCheckbox(parent, label, description, yOffset, getter, setter)
+    local checkbox = CreateFrame("CheckButton", nil, parent, "InterfaceOptionsCheckButtonTemplate")
+    checkbox:SetPoint("TOPLEFT", parent, "TOPLEFT", 24, yOffset)
+    checkbox.Text:SetText(label)
+    checkbox.tooltipText = label
+    checkbox.tooltipRequirement = description
+
+    checkbox:SetScript("OnClick", function(self)
+        setter(getDB(), self:GetChecked() and true or false)
+        applyLayout()
+        addon:Refresh()
+        refreshOptionsPanel()
+    end)
+
+    function checkbox:Refresh(db)
+        self:SetChecked(getter(db) and true or false)
+    end
+
+    return checkbox
+end
+
+local function createOptionsButton(parent, label, yOffset, onClick)
+    local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    button:SetPoint("TOPLEFT", parent, "TOPLEFT", 28, yOffset)
+    button:SetSize(160, 24)
+    button:SetText(label)
+    button:SetScript("OnClick", onClick)
+    return button
+end
+
+local function createOptionsSlider(parent, label, yOffset, minValue, maxValue, step, getter, setter, formatter)
+    local slider = CreateFrame("Slider", nil, parent, "OptionsSliderTemplate")
+    slider:SetPoint("TOPLEFT", parent, "TOPLEFT", 28, yOffset)
+    slider:SetWidth(220)
+    slider:SetMinMaxValues(minValue, maxValue)
+    slider:SetValueStep(step)
+    slider:SetObeyStepOnDrag(true)
+    slider.Text:SetText(label)
+    slider.Low:SetText(tostring(minValue))
+    slider.High:SetText(tostring(maxValue))
+
+    local valueText = parent:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    valueText:SetPoint("LEFT", slider, "RIGHT", 16, 0)
+
+    slider:SetScript("OnValueChanged", function(self, value)
+        local db = getDB()
+        value = math.floor((value / step) + 0.5) * step
+        setter(db, value)
+        valueText:SetText(formatter and formatter(value) or tostring(value))
+        applyLayout()
+        addon:Refresh()
+    end)
+
+    function slider:Refresh(db)
+        local value = getter(db)
+        self:SetValue(value)
+        valueText:SetText(formatter and formatter(value) or tostring(value))
+    end
+
+    return slider
+end
+
+local function createThemeDropdown(parent, yOffset)
+    if not (UIDropDownMenu_Initialize and UIDropDownMenu_CreateInfo and UIDropDownMenu_AddButton and UIDropDownMenu_SetText and UIDropDownMenu_SetWidth) then
+        return createOptionsButton(parent, "Theme: Blizzard Gold", yOffset - 22, function()
+            local order = { "blizzard", "dark", "predator" }
+            local db = getDB()
+            local currentIndex = 1
+            for index, themeKey in ipairs(order) do
+                if db.theme == themeKey then
+                    currentIndex = index
+                    break
+                end
+            end
+            local nextTheme = order[(currentIndex % #order) + 1]
+            db.theme = nextTheme
+            applyLayout()
+            addon:Refresh()
+            refreshOptionsPanel()
+        end)
+    end
+
+    local label = parent:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    label:SetPoint("TOPLEFT", parent, "TOPLEFT", 28, yOffset)
+    label:SetText("Theme")
+
+    local dropdown = CreateFrame("Frame", "EasyPreyProgressThemeDropdown", parent, "UIDropDownMenuTemplate")
+    dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", -16, -4)
+
+    UIDropDownMenu_SetWidth(dropdown, 160)
+
+    local function setTheme(themeKey)
+        getDB().theme = themeKey
+        UIDropDownMenu_SetText(dropdown, THEMES[themeKey].label)
+        applyLayout()
+        addon:Refresh()
+        refreshOptionsPanel()
+    end
+
+    UIDropDownMenu_Initialize(dropdown, function(_, level)
+        if level ~= 1 then
+            return
+        end
+
+        local order = { "blizzard", "dark", "predator" }
+        for _, themeKey in ipairs(order) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = THEMES[themeKey].label
+            info.checked = false
+            info.notCheckable = true
+            info.func = function()
+                setTheme(themeKey)
+            end
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
+    function dropdown:Refresh(db)
+        local theme = THEMES[db.theme] or THEMES.blizzard
+        UIDropDownMenu_SetText(dropdown, theme.label)
+    end
+
+    return dropdown
+end
+
+local function createOptionsPanel()
+    if optionsPanel then
+        return optionsPanel
+    end
+
+    local panel = CreateFrame("Frame")
+    panel.name = "EasyPreyProgress"
+    panel.controls = {}
+
+    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("EasyPreyProgress")
+
+    local subtitle = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    subtitle:SetText("Configure the Prey Hunt progress bar.")
+
+    local movementHint = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    movementHint:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -14)
+    movementHint:SetText("Move the bar by holding Shift and dragging it with the left mouse button.")
+
+    panel.controls[#panel.controls + 1] = createOptionsCheckbox(
+        panel,
+        "Show the bar",
+        "Controls whether the EasyPreyProgress bar is allowed to appear.",
+        -86,
+        function(db) return db.shown end,
+        function(db, value) db.shown = value end
+    )
+
+    panel.controls[#panel.controls + 1] = createOptionsCheckbox(
+        panel,
+        "Only show in the Prey zone",
+        "Hide the bar when your active Prey Hunt is not on the current map or zone.",
+        -116,
+        function(db) return db.onlyShowInPreyZone end,
+        function(db, value) db.onlyShowInPreyZone = value end
+    )
+
+    panel.controls[#panel.controls + 1] = createOptionsCheckbox(
+        panel,
+        "Show without an active Prey Hunt",
+        "Keep the bar visible for positioning and testing even when no Prey Hunt is active.",
+        -146,
+        function(db) return db.showWithoutActivePrey end,
+        function(db, value) db.showWithoutActivePrey = value end
+    )
+
+    panel.controls[#panel.controls + 1] = createOptionsCheckbox(
+        panel,
+        "Hide the default Blizzard Prey widget",
+        "Hide Blizzard's default Prey widget visuals while EasyPreyProgress is active.",
+        -176,
+        function(db) return db.hideBlizzardPreyWidget end,
+        function(db, value) db.hideBlizzardPreyWidget = value end
+    )
+
+    local appearanceTitle = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    appearanceTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 18, -220)
+    appearanceTitle:SetText("Appearance")
+
+    panel.controls[#panel.controls + 1] = createOptionsSlider(
+        panel,
+        "Scale",
+        -260,
+        0.75,
+        1.5,
+        0.05,
+        function(db) return db.scale end,
+        function(db, value) db.scale = clamp(value, 0.75, 1.5) end,
+        function(value) return string.format("%.2f", value) end
+    )
+
+    panel.controls[#panel.controls + 1] = createOptionsSlider(
+        panel,
+        "Width",
+        -320,
+        180,
+        320,
+        10,
+        function(db) return db.width end,
+        function(db, value) db.width = clamp(value, 180, 320) end,
+        function(value) return string.format("%d", value) end
+    )
+
+    panel.controls[#panel.controls + 1] = createOptionsCheckbox(
+        panel,
+        "Show title",
+        "Show or hide the Prey Progress title.",
+        -365,
+        function(db) return db.showTitle end,
+        function(db, value) db.showTitle = value end
+    )
+
+    panel.controls[#panel.controls + 1] = createOptionsCheckbox(
+        panel,
+        "Show percentage text",
+        "Show or hide the percentage text inside the bar.",
+        -395,
+        function(db) return db.showPercentText end,
+        function(db, value) db.showPercentText = value end
+    )
+
+    panel.controls[#panel.controls + 1] = createOptionsCheckbox(
+        panel,
+        "Show trap text",
+        "Show or hide nearby trap text when detected.",
+        -425,
+        function(db) return db.showTrapText end,
+        function(db, value) db.showTrapText = value end
+    )
+
+    panel.controls[#panel.controls + 1] = createThemeDropdown(panel, -470)
+
+    createOptionsButton(panel, "Reset position", -540, function()
+        local db = getDB()
+        db.point = {
+            anchor = DEFAULTS.point.anchor,
+            relativePoint = DEFAULTS.point.relativePoint,
+            x = DEFAULTS.point.x,
+            y = DEFAULTS.point.y,
+        }
+        applyLayout()
+        addon:Refresh()
+    end)
+
+    createOptionsButton(panel, "Reset appearance", -570, function()
+        local db = getDB()
+        db.width = DEFAULTS.width
+        db.scale = DEFAULTS.scale
+        db.theme = DEFAULTS.theme
+        db.showTitle = DEFAULTS.showTitle
+        db.showPercentText = DEFAULTS.showPercentText
+        db.showTrapText = DEFAULTS.showTrapText
+        applyLayout()
+        addon:Refresh()
+        refreshOptionsPanel()
+    end)
+
+    panel:SetScript("OnShow", refreshOptionsPanel)
+    optionsPanel = panel
+
+    if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
+        optionsCategory = Settings.RegisterCanvasLayoutCategory(panel, "EasyPreyProgress")
+        Settings.RegisterAddOnCategory(optionsCategory)
+    elseif InterfaceOptions_AddCategory then
+        InterfaceOptions_AddCategory(panel)
+    end
+
+    refreshOptionsPanel()
+    return panel
+end
+
+local function openOptionsPanel()
+    createOptionsPanel()
+
+    if Settings and Settings.OpenToCategory and optionsCategory then
+        local categoryID = optionsCategory.GetID and optionsCategory:GetID() or optionsCategory.ID
+        if categoryID then
+            Settings.OpenToCategory(categoryID)
+            return
+        end
+    end
+
+    if InterfaceOptionsFrame_OpenToCategory and optionsPanel then
+        InterfaceOptionsFrame_OpenToCategory(optionsPanel)
+        InterfaceOptionsFrame_OpenToCategory(optionsPanel)
+    end
+end
+
 SLASH_EASYPREYPROGRESS1 = "/epp"
 SlashCmdList.EASYPREYPROGRESS = function(msg)
     msg = (msg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
     local db = getDB()
 
-    if msg == "lock" then
-        db.locked = true
-    elseif msg == "unlock" then
-        db.locked = false
+    if msg == "options" or msg == "config" or msg == "settings" or msg == "" then
+        openOptionsPanel()
     elseif msg == "hide" then
         db.shown = false
     elseif msg == "show" then
@@ -1821,35 +1743,8 @@ SlashCmdList.EASYPREYPROGRESS = function(msg)
     elseif msg == "blizz" then
         db.hideBlizzardPreyWidget = not db.hideBlizzardPreyWidget
         print("|cffd6a800EasyPreyProgress|r Blizzard prey widget verbergen: " .. (db.hideBlizzardPreyWidget and "aan" or "uit"))
-    elseif msg == "debug" then
-        debugEnabled = not debugEnabled
-        print("|cffd6a800EasyPreyProgress|r debug " .. (debugEnabled and "aan" or "uit"))
-    elseif msg == "tooltip" then
-        local tooltip = preyWidgetCache and preyWidgetCache.tooltip or nil
-        if tooltip and tooltip ~= "" then
-            print("|cffd6a800EasyPreyProgress tooltip:|r " .. tooltip:gsub("[\r\n]+", " | "))
-        else
-            print("|cffd6a800EasyPreyProgress|r geen cached prey-tooltip gevonden")
-        end
-    elseif msg == "traptext" then
-        local trapText = extractTrapTextFromWidgetFrame() or extractTrapTextFromObjectives(getActivePreyQuestID())
-        if trapText then
-            print("|cffd6a800EasyPreyProgress trap text:|r " .. trapText)
-        else
-            print("|cffd6a800EasyPreyProgress|r geen trap-tekst gevonden op widget of objectives")
-        end
-    elseif msg == "inspecthide" then
-        printTrackedPreyFrameTree()
-    elseif msg == "inspectvisible" then
-        printVisibleUiFrames()
-    elseif msg == "inspecticons" then
-        printVisibleUiIcons()
-    elseif msg == "inspectcursor" then
-        printVisibleFramesNearCursor()
-    elseif msg == "inspecttimer" then
-        printTimerTrackerTree()
     else
-        print("|cffd6a800EasyPreyProgress|r commands: /epp lock, /epp unlock, /epp show, /epp hide, /epp reset, /epp zone, /epp blizz, /epp debug, /epp tooltip, /epp traptext, /epp inspecthide, /epp inspectvisible, /epp inspecticons, /epp inspectcursor, /epp inspecttimer")
+        print("|cffd6a800EasyPreyProgress|r commands: /epp options, /epp show, /epp hide, /epp reset, /epp zone, /epp blizz")
     end
 
     if addon.frame then
@@ -1863,6 +1758,7 @@ addon:SetScript("OnEvent", function(self, event, arg1)
         getDB()
         createUI()
         applyLayout()
+        createOptionsPanel()
         installPreyWidgetHook()
         self:SetScript("OnUpdate", function(_, elapsed)
             self.elapsed = (self.elapsed or 0) + elapsed

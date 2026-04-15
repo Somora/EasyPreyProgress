@@ -1,6 +1,18 @@
 # EasyPreyProgress Changelog
 All notable changes to this project will be documented in this file.
 
+## Version 1.1.0 (15/04/2026)
+- Added a native in-game options panel for EasyPreyProgress.
+- Added `/epp options`, `/epp config`, and `/epp settings` to open the options panel.
+- Added settings for showing the bar, zone-only visibility, showing the bar without an active Prey Hunt, hiding the default Blizzard Prey widget, and resetting the bar position.
+- Added appearance settings for scale, width, theme, title visibility, percentage text, and trap text.
+- Added `Blizzard Gold`, `Dark Minimal`, and `Predator Red` theme presets.
+- Added a reset appearance button.
+- Polished the options panel layout and theme dropdown spacing.
+- Simplified movement: the bar can now be moved by holding `Shift` and dragging, without using a lock or unlock command.
+- Removed lock/unlock from the public command flow.
+- Removed internal debug and inspection slash commands from the public addon build.
+
 ## Version 1.0.1 (08/04/2026)
 - Improved Blizzard Prey widget suppression to more reliably hide leftover visual elements.
 - Added safer handling for Blizzard widget model scenes tied to Prey Hunt UI remnants.
