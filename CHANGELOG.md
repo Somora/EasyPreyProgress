@@ -1,6 +1,10 @@
 # EasyPreyProgress Changelog
 All notable changes to this project will be documented in this file.
 
+## Version 1.1.1 (22/04/2026)
+- Updated the addon interface version for World of Warcraft `120005`.
+- Bumped the addon version for the new WoW client compatibility release.
+
 ## Version 1.1.0 (15/04/2026)
 - Added a native in-game options panel for EasyPreyProgress.
 - Added `/epp options`, `/epp config`, and `/epp settings` to open the options panel.

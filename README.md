@@ -60,4 +60,4 @@ Available options include:
 
 ## Version
 
-Current release: `1.1.0`
+Current release: `1.1.1`
