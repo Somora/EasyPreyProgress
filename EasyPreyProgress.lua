@@ -9,6 +9,11 @@ addon:RegisterEvent("SUPER_TRACKING_CHANGED")
 addon:RegisterEvent("ZONE_CHANGED")
 addon:RegisterEvent("ZONE_CHANGED_INDOORS")
 addon:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+addon:RegisterEvent("PLAYER_REGEN_ENABLED")
+addon:RegisterEvent("PARTY_KILL")
+addon:RegisterEvent("UNIT_AURA")
+addon:RegisterEvent("NAME_PLATE_UNIT_ADDED")
+addon:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
 
 local PREY_PROGRESS_FINAL = 3
 local MAX_STAGE = 4
@@ -21,6 +26,7 @@ local DEFAULTS = {
     showTitle = true,
     showPercentText = true,
     showTrapText = true,
+    showWarningText = true,
     shown = true,
     showWithoutActivePrey = false,
     onlyShowInPreyZone = true,
@@ -68,6 +74,7 @@ local THEMES = {
         percent = { 1.00, 0.96, 0.88, 1.00 },
         stage = { 0.86, 0.78, 0.58, 0.92 },
         trap = { 0.82, 0.68, 0.30, 0.88 },
+        warning = { 0.95, 0.54, 0.22, 0.95 },
         innerLine = { 1.00, 0.95, 0.80, 0.18 },
     },
     dark = {
@@ -82,6 +89,7 @@ local THEMES = {
         percent = { 0.95, 0.95, 0.92, 1.00 },
         stage = { 0.74, 0.74, 0.70, 0.92 },
         trap = { 0.72, 0.62, 0.42, 0.86 },
+        warning = { 0.90, 0.58, 0.32, 0.92 },
         innerLine = { 0.85, 0.85, 0.80, 0.10 },
     },
     predator = {
@@ -96,9 +104,20 @@ local THEMES = {
         percent = { 1.00, 0.92, 0.84, 1.00 },
         stage = { 0.90, 0.68, 0.50, 0.92 },
         trap = { 0.88, 0.52, 0.28, 0.88 },
+        warning = { 1.00, 0.46, 0.24, 0.96 },
         innerLine = { 1.00, 0.62, 0.35, 0.15 },
     },
 }
+
+local BLOODY_COMMAND_SPELL_ID = 1245767
+local ECHO_OF_PREDATION_AURA_ID = 1245795
+local ECHO_OF_PREDATION_HIDDEN_AURA_ID = 1245792
+local ECHO_OF_PREDATION_CURSE_ID = 1246140
+local ECHO_OF_PREDATION_LINKED_SUMMON_ID = 1284079
+local PHANTASMAL_AURA_ID = 1282743
+local ECHO_OF_PREDATION_NPC_ID = 248365
+local KILL_SOMETHING_GRACE_SECONDS = 4.0
+local ECHO_OF_PREDATION_GRACE_SECONDS = 0.6
 
 local widgetHookInstalled = false
 local preyWidgetCache = nil
@@ -109,6 +128,17 @@ local hookedPreyFrames = setmetatable({}, { __mode = "k" })
 local ensurePreyWidgetHideHook
 local optionsPanel = nil
 local optionsCategory = nil
+local killSomethingActive = false
+local echoOfPredationActive = false
+local killSomethingUntil = 0
+local echoOfPredationUntil = 0
+local echoNameplateUnits = {}
+
+local WARNING_TEXT = {
+    kill = ">> KILL SOMETHING! <<",
+    fixated = ">> ECHO FIXATED <<",
+    combined = ">> ECHO FIXATED - KILL SOMETHING! <<",
+}
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -193,6 +223,100 @@ local function safeToNumber(value)
     end
 
     return nil
+end
+
+local function getUnitNPCID(unit)
+    if not unit or not UnitGUID then
+        return nil
+    end
+
+    local guid = UnitGUID(unit)
+    if type(guid) ~= "string" then
+        return nil
+    end
+
+    local unitType, _, _, _, _, npcID = strsplit("-", guid)
+    if unitType ~= "Creature" and unitType ~= "Vehicle" then
+        return nil
+    end
+
+    return tonumber(npcID)
+end
+
+local function hasEchoNameplate()
+    for unitToken in pairs(echoNameplateUnits) do
+        if UnitExists and UnitExists(unitToken) and getUnitNPCID(unitToken) == ECHO_OF_PREDATION_NPC_ID then
+            return true
+        else
+            echoNameplateUnits[unitToken] = nil
+        end
+    end
+
+    return false
+end
+
+local function hasPlayerAuraBySpellID(spellID)
+    if not spellID then
+        return false
+    end
+
+    if C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
+        local okAura, auraInfo = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
+        if okAura and auraInfo ~= nil then
+            return true
+        end
+    end
+
+    if AuraUtil and AuraUtil.FindAuraBySpellID then
+        local okFind, name = pcall(AuraUtil.FindAuraBySpellID, spellID, "player", "HARMFUL")
+        if okFind and name ~= nil then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function hasAnyPlayerAura(spellIDs)
+    for _, spellID in ipairs(spellIDs) do
+        if hasPlayerAuraBySpellID(spellID) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function updateStickyState(isActiveNow, graceSeconds, expiresAt)
+    local now = GetTime and GetTime() or 0
+    if isActiveNow then
+        return true, now + graceSeconds
+    end
+
+    return now < (expiresAt or 0), expiresAt
+end
+
+local function refreshMechanicStates()
+    local hasKillAura = hasPlayerAuraBySpellID(BLOODY_COMMAND_SPELL_ID)
+    local hasEchoAura = hasAnyPlayerAura({
+        ECHO_OF_PREDATION_AURA_ID,
+        ECHO_OF_PREDATION_HIDDEN_AURA_ID,
+        ECHO_OF_PREDATION_CURSE_ID,
+        ECHO_OF_PREDATION_LINKED_SUMMON_ID,
+        PHANTASMAL_AURA_ID,
+    })
+        or hasEchoNameplate()
+
+    killSomethingActive, killSomethingUntil = updateStickyState(
+        hasKillAura,
+        KILL_SOMETHING_GRACE_SECONDS,
+        killSomethingUntil
+    )
+    echoOfPredationActive, echoOfPredationUntil = updateStickyState(
+        hasEchoAura,
+        ECHO_OF_PREDATION_GRACE_SECONDS,
+        echoOfPredationUntil
+    )
 end
 
 local MAP_ID_EQUIVALENTS = {
@@ -688,6 +812,56 @@ local function extractNearbyTrapText(tooltipText)
     return nil
 end
 
+local function extractWarningStateFromText(text)
+    if type(text) ~= "string" or text == "" then
+        return nil
+    end
+
+    local lowered = text:lower()
+    local hasFixated = lowered:find("fixated", 1, true) ~= nil
+    local hasKillSomething = lowered:find("kill something", 1, true) ~= nil
+
+    if hasFixated and hasKillSomething then
+        return {
+            text = "Fixated - Kill something!",
+            type = "kill",
+        }
+    end
+    if hasKillSomething then
+        return {
+            text = "Kill something!",
+            type = "kill",
+        }
+    end
+    if hasFixated then
+        return {
+            text = "Fixated",
+            type = "fixated",
+        }
+    end
+
+    return nil
+end
+
+local function extractWarningStateFromTooltip(tooltipText)
+    if type(tooltipText) ~= "string" or tooltipText == "" then
+        return nil
+    end
+
+    local bestMatch = nil
+    for line in string.gmatch(tooltipText, "[^\r\n]+") do
+        local match = extractWarningStateFromText(line)
+        if match then
+            if match.type == "kill" then
+                return match
+            end
+            bestMatch = bestMatch or match
+        end
+    end
+
+    return bestMatch
+end
+
 local function sanitizeStageDescription(text)
     if type(text) ~= "string" then
         return nil
@@ -753,6 +927,32 @@ local function extractTrapTextFromObjectives(questID)
     end
 
     return nil
+end
+
+local function extractWarningStateFromObjectives(questID)
+    if not questID or not C_QuestLog or not C_QuestLog.GetQuestObjectives then
+        return nil
+    end
+
+    local objectives = C_QuestLog.GetQuestObjectives(questID)
+    if type(objectives) ~= "table" then
+        return nil
+    end
+
+    local bestMatch = nil
+    for _, objective in ipairs(objectives) do
+        if type(objective) == "table" and type(objective.text) == "string" then
+            local match = extractWarningStateFromText(objective.text)
+            if match then
+                if match.type == "kill" then
+                    return match
+                end
+                bestMatch = bestMatch or match
+            end
+        end
+    end
+
+    return bestMatch
 end
 
 local function extractStageDescriptionFromObjectives(questID)
@@ -828,6 +1028,64 @@ local function collectTrapTextFromRegionOwner(owner)
     return nil
 end
 
+local function collectWarningStateFromRegionOwner(owner)
+    if not owner then
+        return nil
+    end
+
+    local function scanRegions(container)
+        if not container or not container.GetRegions then
+            return nil
+        end
+
+        local okRegions, regions = pcall(function()
+            return { container:GetRegions() }
+        end)
+        if not okRegions or type(regions) ~= "table" then
+            return nil
+        end
+
+        local bestMatch = nil
+        for _, region in ipairs(regions) do
+            if region and region.GetObjectType and region:GetObjectType() == "FontString" and region.GetText then
+                local okText, text = pcall(region.GetText, region)
+                if okText then
+                    local match = extractWarningStateFromText(text)
+                    if match then
+                        if match.type == "kill" then
+                            return match
+                        end
+                        bestMatch = bestMatch or match
+                    end
+                end
+            end
+        end
+
+        return bestMatch
+    end
+
+    local direct = scanRegions(owner)
+    if direct then
+        return direct
+    end
+
+    if owner.GetChildren then
+        local okChildren, children = pcall(function()
+            return { owner:GetChildren() }
+        end)
+        if okChildren and type(children) == "table" then
+            for _, child in ipairs(children) do
+                local childMatch = scanRegions(child)
+                if childMatch then
+                    return childMatch
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
 local function extractTrapTextFromWidgetFrame()
     if trackedPreyFrame then
         local text = collectTrapTextFromRegionOwner(trackedPreyFrame)
@@ -841,6 +1099,25 @@ local function extractTrapTextFromWidgetFrame()
         if text then
             trackedPreyFrame = frameRef
             return text
+        end
+    end
+
+    return nil
+end
+
+local function extractWarningStateFromWidgetFrame()
+    if trackedPreyFrame then
+        local match = collectWarningStateFromRegionOwner(trackedPreyFrame)
+        if match then
+            return match
+        end
+    end
+
+    for frameRef in pairs(trackedPreyFrames) do
+        local match = collectWarningStateFromRegionOwner(frameRef)
+        if match then
+            trackedPreyFrame = frameRef
+            return match
         end
     end
 
@@ -1127,6 +1404,8 @@ local function getPreyProgress()
         return nil
     end
 
+    refreshMechanicStates()
+
     local stage = 1
     local percent = nil
     local source = "fallback"
@@ -1163,6 +1442,38 @@ local function getPreyProgress()
         stage = clamp(math.ceil(percent / 25), 1, MAX_STAGE)
     end
 
+    local warningState = extractWarningStateFromTooltip(preyWidgetCache and preyWidgetCache.tooltip)
+        or extractWarningStateFromWidgetFrame()
+        or extractWarningStateFromObjectives(questID)
+
+    if echoOfPredationActive then
+        if warningState and warningState.type == "kill" then
+            warningState = {
+                text = WARNING_TEXT.combined,
+                type = "kill",
+            }
+        elseif not warningState then
+            warningState = {
+                text = WARNING_TEXT.fixated,
+                type = "fixated",
+            }
+        end
+    end
+
+    if killSomethingActive then
+        if warningState and warningState.type == "fixated" then
+            warningState = {
+                text = WARNING_TEXT.combined,
+                type = "kill",
+            }
+        elseif not warningState or warningState.type ~= "kill" then
+            warningState = {
+                text = WARNING_TEXT.kill,
+                type = "kill",
+            }
+        end
+    end
+
     return {
         questID = questID,
         percent = clamp(percent, 0, 100),
@@ -1172,7 +1483,56 @@ local function getPreyProgress()
         nearbyTrapText = (preyWidgetCache and extractNearbyTrapText(preyWidgetCache.tooltip))
             or extractTrapTextFromWidgetFrame()
             or extractTrapTextFromObjectives(questID),
+        warningText = warningState and warningState.text or nil,
+        warningType = warningState and warningState.type or nil,
     }
+end
+
+local function updateFrameHeight(showWarning)
+    local db = getDB()
+    local baseHeight = db.height + 62
+    if showWarning then
+        baseHeight = baseHeight + 16
+    end
+    addon.frame:SetSize(db.width, baseHeight)
+end
+
+local function updateStatusLineAnchors(showTrap, showWarning)
+    addon.trapText:ClearAllPoints()
+    addon.trapText:SetPoint("TOP", addon.stageText, "BOTTOM", 0, -4)
+
+    addon.warningText:ClearAllPoints()
+    if showTrap then
+        addon.warningText:SetPoint("TOP", addon.trapText, "BOTTOM", 0, -3)
+    else
+        addon.warningText:SetPoint("TOP", addon.stageText, "BOTTOM", 0, -4)
+    end
+
+    updateFrameHeight(showWarning)
+end
+
+local function applyWarningVisuals(warningType)
+    if not addon.warningText then
+        return
+    end
+
+    addon.warningText:SetShadowColor(0, 0, 0, 1)
+    addon.warningText:SetShadowOffset(1, -1)
+
+    if warningType == "kill" then
+        addon.warningText:SetFontObject("GameFontNormal")
+        addon.warningText:SetTextColor(1.00, 0.36, 0.18, 1.00)
+        addon.warningText:SetShadowOffset(1.5, -1.5)
+    elseif warningType == "fixated" then
+        addon.warningText:SetFontObject("GameFontNormal")
+        addon.warningText:SetTextColor(1.00, 0.62, 0.24, 0.98)
+        addon.warningText:SetShadowOffset(1.5, -1.5)
+    else
+        local theme = getTheme()
+        addon.warningText:SetFontObject("GameFontNormalSmall")
+        setTextColor(addon.warningText, theme.warning)
+        addon.warningText:SetShadowOffset(1, -1)
+    end
 end
 
 local function createUI()
@@ -1271,6 +1631,14 @@ local function createUI()
     trapText:SetWidth(math.max(120, db.width - 28))
     trapText:SetJustifyH("CENTER")
 
+    local warningText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    warningText:SetPoint("TOP", trapText, "BOTTOM", 0, -3)
+    setTextColor(warningText, theme.warning)
+    warningText:SetWidth(math.max(120, db.width - 28))
+    warningText:SetJustifyH("CENTER")
+    warningText:SetShadowColor(0, 0, 0, 1)
+    warningText:SetShadowOffset(1, -1)
+
     frame:SetScript("OnDragStart", function(self)
         if not IsShiftKeyDown or not IsShiftKeyDown() then
             return
@@ -1300,6 +1668,7 @@ local function createUI()
     addon.text = text
     addon.stageText = stageText
     addon.trapText = trapText
+    addon.warningText = warningText
 
     local titleFont, _, titleFlags = title:GetFont()
     title:SetFont(titleFont, 11, titleFlags)
@@ -1313,11 +1682,12 @@ local function applyLayout()
 
     addon.frame:ClearAllPoints()
     addon.frame:SetPoint(db.point.anchor, UIParent, db.point.relativePoint, db.point.x, db.point.y)
-    addon.frame:SetSize(db.width, db.height + 62)
+    updateFrameHeight(addon.warningText and addon.warningText:IsShown())
     addon.frame:SetScale(db.scale)
     addon.barShell:SetHeight(db.height)
     addon.stageText:SetWidth(math.max(120, db.width - 28))
     addon.trapText:SetWidth(math.max(120, db.width - 28))
+    addon.warningText:SetWidth(math.max(120, db.width - 28))
     if addon.barGloss then
         addon.barGloss:SetHeight(math.max(4, math.floor((db.height - 6) * 0.45)))
     end
@@ -1333,6 +1703,7 @@ local function applyLayout()
     setTextColor(addon.text, theme.percent)
     setTextColor(addon.stageText, theme.stage)
     setTextColor(addon.trapText, theme.trap)
+    applyWarningVisuals(nil)
     addon.title:SetShown(db.showTitle)
     addon.text:SetShown(db.showPercentText)
 
@@ -1357,6 +1728,9 @@ function addon:Refresh()
             self.trapText:SetText("")
             self.trapText:Hide()
         end
+        self.warningText:SetText("")
+        self.warningText:Hide()
+        updateStatusLineAnchors(self.trapText:IsShown(), false)
         if getDB().shown and getDB().showWithoutActivePrey then
             self.frame:Show()
         else
@@ -1413,6 +1787,18 @@ function addon:Refresh()
         self.trapText:SetText("")
         self.trapText:Hide()
     end
+
+    if db.showWarningText and progress.warningText and progress.warningText ~= "" then
+        self.warningText:SetText(progress.warningText)
+        applyWarningVisuals(progress.warningType)
+        self.warningText:Show()
+    else
+        self.warningText:SetText("")
+        applyWarningVisuals(nil)
+        self.warningText:Hide()
+    end
+
+    updateStatusLineAnchors(self.trapText:IsShown(), self.warningText:IsShown())
 end
 
 local function refreshOptionsPanel()
@@ -1665,9 +2051,18 @@ local function createOptionsPanel()
         function(db, value) db.showTrapText = value end
     )
 
-    panel.controls[#panel.controls + 1] = createThemeDropdown(panel, -470)
+    panel.controls[#panel.controls + 1] = createOptionsCheckbox(
+        panel,
+        "Show warning text",
+        "Show Echo of Predation and Bloody Command warnings beneath the bar when detected.",
+        -455,
+        function(db) return db.showWarningText end,
+        function(db, value) db.showWarningText = value end
+    )
 
-    createOptionsButton(panel, "Reset position", -540, function()
+    panel.controls[#panel.controls + 1] = createThemeDropdown(panel, -500)
+
+    createOptionsButton(panel, "Reset position", -570, function()
         local db = getDB()
         db.point = {
             anchor = DEFAULTS.point.anchor,
@@ -1679,7 +2074,7 @@ local function createOptionsPanel()
         addon:Refresh()
     end)
 
-    createOptionsButton(panel, "Reset appearance", -570, function()
+    createOptionsButton(panel, "Reset appearance", -600, function()
         local db = getDB()
         db.width = DEFAULTS.width
         db.scale = DEFAULTS.scale
@@ -1687,6 +2082,7 @@ local function createOptionsPanel()
         db.showTitle = DEFAULTS.showTitle
         db.showPercentText = DEFAULTS.showPercentText
         db.showTrapText = DEFAULTS.showTrapText
+        db.showWarningText = DEFAULTS.showWarningText
         applyLayout()
         addon:Refresh()
         refreshOptionsPanel()
@@ -1753,7 +2149,7 @@ SlashCmdList.EASYPREYPROGRESS = function(msg)
     end
 end
 
-addon:SetScript("OnEvent", function(self, event, arg1)
+addon:SetScript("OnEvent", function(self, event, arg1, ...)
     if event == "ADDON_LOADED" and arg1 == addonName then
         getDB()
         createUI()
@@ -1773,6 +2169,39 @@ addon:SetScript("OnEvent", function(self, event, arg1)
 
     if event == "ADDON_LOADED" and arg1 == "Blizzard_UIWidgets" then
         installPreyWidgetHook()
+    end
+
+    if event == "NAME_PLATE_UNIT_ADDED" then
+        if arg1 and getUnitNPCID(arg1) == ECHO_OF_PREDATION_NPC_ID then
+            echoNameplateUnits[arg1] = true
+            refreshMechanicStates()
+        end
+    elseif event == "NAME_PLATE_UNIT_REMOVED" then
+        if arg1 and echoNameplateUnits[arg1] then
+            echoNameplateUnits[arg1] = nil
+            refreshMechanicStates()
+        end
+    elseif event == "UNIT_AURA" then
+        if arg1 == "player" then
+            refreshMechanicStates()
+        end
+    elseif event == "PARTY_KILL" then
+        refreshMechanicStates()
+    elseif event == "PLAYER_REGEN_ENABLED"
+        or event == "ZONE_CHANGED"
+        or event == "ZONE_CHANGED_INDOORS"
+        or event == "ZONE_CHANGED_NEW_AREA"
+        or event == "PLAYER_ENTERING_WORLD"
+    then
+        refreshMechanicStates()
+
+        local activeQuestID = getActivePreyQuestID()
+        if not activeQuestID then
+            killSomethingActive = false
+            echoOfPredationActive = false
+            killSomethingUntil = 0
+            echoOfPredationUntil = 0
+        end
     end
 
     if not self.frame then

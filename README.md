@@ -11,8 +11,9 @@ It is designed to stay readable during normal gameplay, avoid unnecessary clutte
 - Stage fallback display when no live percentage is available
 - Simple `Stage X/4` readout
 - Nearby trap text when detected
+- Nightmare hunt warning text for `Echo of Predation` and `Bloody Command`
 - Stage-based bar coloring
-- Appearance options for scale, width, theme, title, percentage text, and trap text
+- Appearance options for scale, width, theme, title, percentage text, trap text, and warning text
 - Theme presets: `Blizzard Gold`, `Dark Minimal`, and `Predator Red`
 - Reset buttons for position and appearance
 - Optional zone-only visibility
@@ -43,7 +44,7 @@ Available options include:
 - Hide the default Blizzard Prey widget
 - Adjust scale and width
 - Select a visual theme
-- Show or hide the title, percentage text, and trap text
+- Show or hide the title, percentage text, trap text, and warning text
 - Reset position or appearance
 
 ## Installation
@@ -60,4 +61,4 @@ Available options include:
 
 ## Version
 
-Current release: `1.1.1`
+Current release: `1.1.2`

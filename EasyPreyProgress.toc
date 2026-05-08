@@ -2,7 +2,7 @@
 ## Title: EasyPreyProgress
 ## Notes: A compact progress bar for active Prey Hunts.
 ## Author: Somora
-## Version: 1.1.1
+## Version: 1.1.2
 ## SavedVariables: EasyPreyProgressDB
 
 EasyPreyProgress.lua

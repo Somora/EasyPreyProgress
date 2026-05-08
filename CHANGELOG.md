@@ -1,6 +1,14 @@
 # EasyPreyProgress Changelog
 All notable changes to this project will be documented in this file.
 
+## Version 1.1.2 (08/05/2026)
+- Added Nightmare hunt warning text for `Echo of Predation` and `Bloody Command`.
+- Added clearer on-bar warnings for `Kill Something` and combined Echo/Kill mechanic moments.
+- Added an option to show or hide warning text.
+- Improved warning persistence so `Kill Something` and Echo warnings fade more naturally instead of disappearing too early or lingering too long.
+- Refined warning detection using player aura checks and Echo-related nameplate presence.
+- Cleaned up the warning logic for easier maintenance.
+
 ## Version 1.1.1 (22/04/2026)
 - Updated the addon interface version for World of Warcraft `120005`.
 - Bumped the addon version for the new WoW client compatibility release.
