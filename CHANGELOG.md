@@ -1,6 +1,10 @@
 # EasyPreyProgress Changelog
 All notable changes to this project will be documented in this file.
 
+## Version 1.1.3 (11/05/2026)
+- Fixed a `secret string value` error caused by the Echo of Predation nameplate fallback.
+- Removed the unsafe nameplate GUID parsing path to avoid taint-related errors in combat.
+
 ## Version 1.1.2 (08/05/2026)
 - Added Nightmare hunt warning text for `Echo of Predation` and `Bloody Command`.
 - Added clearer on-bar warnings for `Kill Something` and combined Echo/Kill mechanic moments.

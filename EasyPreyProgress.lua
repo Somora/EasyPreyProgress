@@ -12,8 +12,6 @@ addon:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 addon:RegisterEvent("PLAYER_REGEN_ENABLED")
 addon:RegisterEvent("PARTY_KILL")
 addon:RegisterEvent("UNIT_AURA")
-addon:RegisterEvent("NAME_PLATE_UNIT_ADDED")
-addon:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
 
 local PREY_PROGRESS_FINAL = 3
 local MAX_STAGE = 4
@@ -115,7 +113,6 @@ local ECHO_OF_PREDATION_HIDDEN_AURA_ID = 1245792
 local ECHO_OF_PREDATION_CURSE_ID = 1246140
 local ECHO_OF_PREDATION_LINKED_SUMMON_ID = 1284079
 local PHANTASMAL_AURA_ID = 1282743
-local ECHO_OF_PREDATION_NPC_ID = 248365
 local KILL_SOMETHING_GRACE_SECONDS = 4.0
 local ECHO_OF_PREDATION_GRACE_SECONDS = 0.6
 
@@ -132,7 +129,6 @@ local killSomethingActive = false
 local echoOfPredationActive = false
 local killSomethingUntil = 0
 local echoOfPredationUntil = 0
-local echoNameplateUnits = {}
 
 local WARNING_TEXT = {
     kill = ">> KILL SOMETHING! <<",
@@ -225,36 +221,6 @@ local function safeToNumber(value)
     return nil
 end
 
-local function getUnitNPCID(unit)
-    if not unit or not UnitGUID then
-        return nil
-    end
-
-    local guid = UnitGUID(unit)
-    if type(guid) ~= "string" then
-        return nil
-    end
-
-    local unitType, _, _, _, _, npcID = strsplit("-", guid)
-    if unitType ~= "Creature" and unitType ~= "Vehicle" then
-        return nil
-    end
-
-    return tonumber(npcID)
-end
-
-local function hasEchoNameplate()
-    for unitToken in pairs(echoNameplateUnits) do
-        if UnitExists and UnitExists(unitToken) and getUnitNPCID(unitToken) == ECHO_OF_PREDATION_NPC_ID then
-            return true
-        else
-            echoNameplateUnits[unitToken] = nil
-        end
-    end
-
-    return false
-end
-
 local function hasPlayerAuraBySpellID(spellID)
     if not spellID then
         return false
@@ -305,7 +271,6 @@ local function refreshMechanicStates()
         ECHO_OF_PREDATION_LINKED_SUMMON_ID,
         PHANTASMAL_AURA_ID,
     })
-        or hasEchoNameplate()
 
     killSomethingActive, killSomethingUntil = updateStickyState(
         hasKillAura,
@@ -2171,17 +2136,7 @@ addon:SetScript("OnEvent", function(self, event, arg1, ...)
         installPreyWidgetHook()
     end
 
-    if event == "NAME_PLATE_UNIT_ADDED" then
-        if arg1 and getUnitNPCID(arg1) == ECHO_OF_PREDATION_NPC_ID then
-            echoNameplateUnits[arg1] = true
-            refreshMechanicStates()
-        end
-    elseif event == "NAME_PLATE_UNIT_REMOVED" then
-        if arg1 and echoNameplateUnits[arg1] then
-            echoNameplateUnits[arg1] = nil
-            refreshMechanicStates()
-        end
-    elseif event == "UNIT_AURA" then
+    if event == "UNIT_AURA" then
         if arg1 == "player" then
             refreshMechanicStates()
         end
