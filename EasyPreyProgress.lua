@@ -5,6 +5,7 @@ addon:RegisterEvent("ADDON_LOADED")
 addon:RegisterEvent("PLAYER_ENTERING_WORLD")
 addon:RegisterEvent("QUEST_ACCEPTED")
 addon:RegisterEvent("QUEST_LOG_UPDATE")
+addon:RegisterEvent("QUEST_TURNED_IN")
 addon:RegisterEvent("SUPER_TRACKING_CHANGED")
 addon:RegisterEvent("ZONE_CHANGED")
 addon:RegisterEvent("ZONE_CHANGED_INDOORS")
@@ -1280,6 +1281,7 @@ local function installPreyWidgetHook()
             progressState = progressState,
             tooltip = tooltipText,
             percent = percent,
+            questID = getActivePreyQuestID(),
             seenAt = GetTime and GetTime() or 0,
             source = source,
         }
@@ -1316,6 +1318,7 @@ local function refreshWidgetCacheFromFrame()
         progressState = frameData.progressState,
         tooltip = frameData.tooltip,
         percent = frameData.percent,
+        questID = getActivePreyQuestID(),
         seenAt = GetTime and GetTime() or 0,
         source = frameData.source,
     }
@@ -1399,8 +1402,9 @@ local function getPreyProgress()
     local source = "fallback"
 
     refreshWidgetCacheFromFrame()
+    local cacheMatchesQuest = preyWidgetCache and preyWidgetCache.questID == questID
 
-    if preyWidgetCache and ((GetTime and GetTime() or 0) - (preyWidgetCache.seenAt or 0)) <= 3 then
+    if cacheMatchesQuest and ((GetTime and GetTime() or 0) - (preyWidgetCache.seenAt or 0)) <= 3 then
         if preyWidgetCache.progressState ~= nil then
             stage = getStageFromState(preyWidgetCache.progressState)
             source = preyWidgetCache.source or "widget"
@@ -1411,7 +1415,7 @@ local function getPreyProgress()
         end
     end
 
-    if percent == nil and not (preyWidgetCache and preyWidgetCache.progressState ~= nil) then
+    if percent == nil and not (cacheMatchesQuest and preyWidgetCache and preyWidgetCache.progressState ~= nil) then
         percent = extractObjectivePercent(questID)
         if percent ~= nil then
             source = "objective"
@@ -1419,18 +1423,18 @@ local function getPreyProgress()
     end
 
     if percent == nil then
-        local progressState = preyWidgetCache and preyWidgetCache.progressState or nil
+        local progressState = cacheMatchesQuest and preyWidgetCache and preyWidgetCache.progressState or nil
         if progressState == nil and C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted and C_QuestLog.IsQuestFlaggedCompleted(questID) then
             progressState = PREY_PROGRESS_FINAL
         end
         stage = getStageFromState(progressState)
         percent = STAGE_PERCENT[stage]
-        source = progressState ~= nil and (preyWidgetCache and preyWidgetCache.source or "stage") or "fallback"
-    elseif preyWidgetCache == nil or preyWidgetCache.progressState == nil then
+        source = progressState ~= nil and ((cacheMatchesQuest and preyWidgetCache and preyWidgetCache.source) or "stage") or "fallback"
+    elseif not cacheMatchesQuest or preyWidgetCache == nil or preyWidgetCache.progressState == nil then
         stage = clamp(math.ceil(percent / 25), 1, MAX_STAGE)
     end
 
-    local warningState = extractWarningStateFromTooltip(preyWidgetCache and preyWidgetCache.tooltip)
+    local warningState = extractWarningStateFromTooltip(cacheMatchesQuest and preyWidgetCache and preyWidgetCache.tooltip)
         or extractWarningStateFromWidgetFrame()
         or extractWarningStateFromObjectives(questID)
 
@@ -1468,7 +1472,7 @@ local function getPreyProgress()
         stage = stage,
         source = source,
         inPreyZone = isPlayerInPreyZone(questID),
-        nearbyTrapText = (preyWidgetCache and extractNearbyTrapText(preyWidgetCache.tooltip))
+        nearbyTrapText = ((cacheMatchesQuest and preyWidgetCache) and extractNearbyTrapText(preyWidgetCache.tooltip))
             or extractTrapTextFromWidgetFrame()
             or extractTrapTextFromObjectives(questID),
         warningText = warningState and warningState.text or nil,
@@ -2180,6 +2184,7 @@ addon:SetScript("OnEvent", function(self, event, arg1, ...)
         end
     elseif event == "QUEST_ACCEPTED"
         or event == "QUEST_LOG_UPDATE"
+        or event == "QUEST_TURNED_IN"
         or event == "SUPER_TRACKING_CHANGED"
     then
         syncActivePreyQuestState()

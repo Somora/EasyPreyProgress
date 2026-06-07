@@ -61,4 +61,4 @@ Available options include:
 
 ## Version
 
-Current release: `1.1.4`
+Current release: `1.1.5`
