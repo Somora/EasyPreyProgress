@@ -1,6 +1,10 @@
 # EasyPreyProgress Changelog
 All notable changes to this project will be documented in this file.
 
+## Version 1.1.4 (07/06/2026)
+- Fixed stale progress, stage, and trap text carrying over after turning in a Prey Hunt and accepting a new one.
+- Reset transient widget and warning state when the active Prey quest changes.
+
 ## Version 1.1.3 (11/05/2026)
 - Fixed a `secret string value` error caused by the Echo of Predation nameplate fallback.
 - Removed the unsafe nameplate GUID parsing path to avoid taint-related errors in combat.

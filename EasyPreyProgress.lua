@@ -129,6 +129,7 @@ local killSomethingActive = false
 local echoOfPredationActive = false
 local killSomethingUntil = 0
 local echoOfPredationUntil = 0
+local lastActivePreyQuestID = nil
 
 local WARNING_TEXT = {
     kill = ">> KILL SOMETHING! <<",
@@ -260,6 +261,28 @@ local function updateStickyState(isActiveNow, graceSeconds, expiresAt)
     end
 
     return now < (expiresAt or 0), expiresAt
+end
+
+local function resetTransientPreyState()
+    preyWidgetCache = nil
+    trackedPreyFrame = nil
+    trackedPreyFrames = setmetatable({}, { __mode = "k" })
+    trackedPreyVisualFrames = setmetatable({}, { __mode = "k" })
+    hookedPreyFrames = setmetatable({}, { __mode = "k" })
+    killSomethingActive = false
+    echoOfPredationActive = false
+    killSomethingUntil = 0
+    echoOfPredationUntil = 0
+end
+
+local function syncActivePreyQuestState()
+    local activeQuestID = getActivePreyQuestID()
+    if activeQuestID ~= lastActivePreyQuestID then
+        resetTransientPreyState()
+        lastActivePreyQuestID = activeQuestID
+    end
+
+    return activeQuestID
 end
 
 local function refreshMechanicStates()
@@ -1364,7 +1387,7 @@ local function extractObjectivePercent(questID)
 end
 
 local function getPreyProgress()
-    local questID = getActivePreyQuestID()
+    local questID = syncActivePreyQuestState()
     if not questID then
         return nil
     end
@@ -2117,6 +2140,7 @@ end
 addon:SetScript("OnEvent", function(self, event, arg1, ...)
     if event == "ADDON_LOADED" and arg1 == addonName then
         getDB()
+        syncActivePreyQuestState()
         createUI()
         applyLayout()
         createOptionsPanel()
@@ -2150,13 +2174,15 @@ addon:SetScript("OnEvent", function(self, event, arg1, ...)
     then
         refreshMechanicStates()
 
-        local activeQuestID = getActivePreyQuestID()
+        local activeQuestID = syncActivePreyQuestState()
         if not activeQuestID then
-            killSomethingActive = false
-            echoOfPredationActive = false
-            killSomethingUntil = 0
-            echoOfPredationUntil = 0
+            resetTransientPreyState()
         end
+    elseif event == "QUEST_ACCEPTED"
+        or event == "QUEST_LOG_UPDATE"
+        or event == "SUPER_TRACKING_CHANGED"
+    then
+        syncActivePreyQuestState()
     end
 
     if not self.frame then
