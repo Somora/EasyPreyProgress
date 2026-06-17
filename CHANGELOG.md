@@ -1,6 +1,10 @@
 # EasyPreyProgress Changelog
 All notable changes to this project will be documented in this file.
 
+## Version 1.1.6 (17/06/2026)
+- Updated the addon interface version for World of Warcraft `120007`.
+- Improved widget cache handling after switching Prey Hunts so old Blizzard widget data is ignored until the new hunt provides fresh zone-relevant data.
+
 ## Version 1.1.5 (07/06/2026)
 - Fixed old Blizzard widget cache data from a completed Prey Hunt carrying over into the next accepted hunt.
 - Bound cached widget progress to the active Prey quest and refreshed state on quest turn-in.

@@ -116,6 +116,7 @@ local ECHO_OF_PREDATION_LINKED_SUMMON_ID = 1284079
 local PHANTASMAL_AURA_ID = 1282743
 local KILL_SOMETHING_GRACE_SECONDS = 4.0
 local ECHO_OF_PREDATION_GRACE_SECONDS = 0.6
+local WIDGET_CACHE_RESET_GRACE_SECONDS = 4.0
 
 local widgetHookInstalled = false
 local preyWidgetCache = nil
@@ -131,6 +132,7 @@ local echoOfPredationActive = false
 local killSomethingUntil = 0
 local echoOfPredationUntil = 0
 local lastActivePreyQuestID = nil
+local ignoreWidgetCacheUntil = 0
 
 local WARNING_TEXT = {
     kill = ">> KILL SOMETHING! <<",
@@ -276,10 +278,15 @@ local function resetTransientPreyState()
     echoOfPredationUntil = 0
 end
 
+local function shouldIgnoreWidgetCache()
+    return (GetTime and GetTime() or 0) < (ignoreWidgetCacheUntil or 0)
+end
+
 local function syncActivePreyQuestState()
     local activeQuestID = getActivePreyQuestID()
     if activeQuestID ~= lastActivePreyQuestID then
         resetTransientPreyState()
+        ignoreWidgetCacheUntil = (GetTime and GetTime() or 0) + WIDGET_CACHE_RESET_GRACE_SECONDS
         lastActivePreyQuestID = activeQuestID
     end
 
@@ -1262,6 +1269,11 @@ local function installPreyWidgetHook()
         trackedPreyFrame = self
         trackedPreyFrames[self] = true
 
+        if shouldIgnoreWidgetCache() then
+            applyBlizzardWidgetVisibility()
+            return
+        end
+
         local tooltipText = type(widgetInfo) == "table" and type(widgetInfo.tooltip) == "string" and widgetInfo.tooltip or nil
         local progressState = type(widgetInfo) == "table" and widgetInfo.progressState or nil
         local percent = extractProgressPercentFromInfo(widgetInfo, tooltipText)
@@ -1297,6 +1309,10 @@ local function installPreyWidgetHook()
 end
 
 local function refreshWidgetCacheFromFrame()
+    if shouldIgnoreWidgetCache() then
+        return
+    end
+
     captureLivePreyHuntFrames()
 
     local frameData = trackedPreyFrame and readPreyFieldsFromFrame(trackedPreyFrame) or nil
@@ -1396,15 +1412,19 @@ local function getPreyProgress()
     end
 
     refreshMechanicStates()
+    local inPreyZone = isPlayerInPreyZone(questID)
+    local shouldTrustWidgetData = inPreyZone ~= false and not shouldIgnoreWidgetCache()
 
     local stage = 1
     local percent = nil
     local source = "fallback"
 
-    refreshWidgetCacheFromFrame()
+    if shouldTrustWidgetData then
+        refreshWidgetCacheFromFrame()
+    end
     local cacheMatchesQuest = preyWidgetCache and preyWidgetCache.questID == questID
 
-    if cacheMatchesQuest and ((GetTime and GetTime() or 0) - (preyWidgetCache.seenAt or 0)) <= 3 then
+    if shouldTrustWidgetData and cacheMatchesQuest and ((GetTime and GetTime() or 0) - (preyWidgetCache.seenAt or 0)) <= 3 then
         if preyWidgetCache.progressState ~= nil then
             stage = getStageFromState(preyWidgetCache.progressState)
             source = preyWidgetCache.source or "widget"
@@ -1434,8 +1454,8 @@ local function getPreyProgress()
         stage = clamp(math.ceil(percent / 25), 1, MAX_STAGE)
     end
 
-    local warningState = extractWarningStateFromTooltip(cacheMatchesQuest and preyWidgetCache and preyWidgetCache.tooltip)
-        or extractWarningStateFromWidgetFrame()
+    local warningState = extractWarningStateFromTooltip((shouldTrustWidgetData and cacheMatchesQuest and preyWidgetCache) and preyWidgetCache.tooltip)
+        or (shouldTrustWidgetData and extractWarningStateFromWidgetFrame() or nil)
         or extractWarningStateFromObjectives(questID)
 
     if echoOfPredationActive then
@@ -1471,9 +1491,9 @@ local function getPreyProgress()
         percent = clamp(percent, 0, 100),
         stage = stage,
         source = source,
-        inPreyZone = isPlayerInPreyZone(questID),
-        nearbyTrapText = ((cacheMatchesQuest and preyWidgetCache) and extractNearbyTrapText(preyWidgetCache.tooltip))
-            or extractTrapTextFromWidgetFrame()
+        inPreyZone = inPreyZone,
+        nearbyTrapText = ((shouldTrustWidgetData and cacheMatchesQuest and preyWidgetCache) and extractNearbyTrapText(preyWidgetCache.tooltip))
+            or (shouldTrustWidgetData and extractTrapTextFromWidgetFrame() or nil)
             or extractTrapTextFromObjectives(questID),
         warningText = warningState and warningState.text or nil,
         warningType = warningState and warningState.type or nil,
