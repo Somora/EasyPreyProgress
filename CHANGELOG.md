@@ -1,6 +1,9 @@
 # EasyPreyProgress Changelog
 All notable changes to this project will be documented in this file.
 
+## Version 1.1.7 (12/08/2026)
+- Updated the addon interface version for World of Warcraft `120100`.
+
 ## Version 1.1.6 (17/06/2026)
 - Updated the addon interface version for World of Warcraft `120007`.
 - Improved widget cache handling after switching Prey Hunts so old Blizzard widget data is ignored until the new hunt provides fresh zone-relevant data.
