@@ -1,6 +1,9 @@
 # EasyPreyProgress Changelog
 All notable changes to this project will be documented in this file.
 
+## Version 1.1.8 (15/10/2026)
+- Updated the addon interface version to `120105` for World of Warcraft Retail `12.1.5`.
+
 ## Version 1.1.7 (12/08/2026)
 - Updated the addon interface version for World of Warcraft `120100`.
 

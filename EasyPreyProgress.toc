@@ -1,8 +1,8 @@
-## Interface: 120100
+## Interface: 120105
 ## Title: EasyPreyProgress
 ## Notes: A compact progress bar for active Prey Hunts.
 ## Author: Somora
-## Version: 1.1.7
+## Version: 1.1.8
 ## SavedVariables: EasyPreyProgressDB
 
 EasyPreyProgress.lua
