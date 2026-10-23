@@ -122,7 +122,6 @@ local widgetHookInstalled = false
 local preyWidgetCache = nil
 local trackedPreyFrame = nil
 local trackedPreyFrames = setmetatable({}, { __mode = "k" })
-local trackedPreyVisualFrames = setmetatable({}, { __mode = "k" })
 local hookedPreyFrames = setmetatable({}, { __mode = "k" })
 local ensurePreyWidgetHideHook
 local optionsPanel = nil
@@ -198,52 +197,43 @@ local function setBackdropBorderColor(frame, color)
     end
 end
 
-local function getActivePreyQuestID()
-    if C_QuestLog and C_QuestLog.GetActivePreyQuest then
-        return C_QuestLog.GetActivePreyQuest()
+-- Never inspect, compare, or parse a secret value, even after a successful pcall.
+local function publicValue(value)
+    if issecretvalue and issecretvalue(value) then
+        return nil
+    end
+    return value
+end
+
+local function publicField(object, key)
+    object = publicValue(object)
+    if type(object) ~= "table" then return nil end
+    return publicValue(object[key])
+end
+
+local function safeToNumber(value)
+    value = publicValue(value)
+    if type(value) ~= "number" and type(value) ~= "string" then return nil end
+    local number = tonumber(value)
+    if number and number == number and number ~= math.huge and number ~= -math.huge then
+        return number
     end
     return nil
 end
 
-local function safeToNumber(value)
-    local okString, asString = pcall(tostring, value)
-    if not okString or type(asString) ~= "string" then
-        return nil
+local function getActivePreyQuestID()
+    if C_QuestLog and C_QuestLog.GetActivePreyQuest then
+        return safeToNumber(C_QuestLog.GetActivePreyQuest())
     end
-
-    local numericToken = string.match(asString, "^%s*([%+%-]?%d+%.?%d*)%s*$")
-        or string.match(asString, "^%s*([%+%-]?%d*%.%d+)%s*$")
-    if not numericToken then
-        return nil
-    end
-
-    local okNumber, result = pcall(tonumber, numericToken)
-    if okNumber and type(result) == "number" then
-        return result
-    end
-
     return nil
 end
 
 local function hasPlayerAuraBySpellID(spellID)
-    if not spellID then
-        return false
-    end
-
     if C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
-        local okAura, auraInfo = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
-        if okAura and auraInfo ~= nil then
-            return true
-        end
+        local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
+        -- Restricted auras are unavailable. Do not fall back to an aura scan.
+        return ok and type(publicValue(aura)) == "table"
     end
-
-    if AuraUtil and AuraUtil.FindAuraBySpellID then
-        local okFind, name = pcall(AuraUtil.FindAuraBySpellID, spellID, "player", "HARMFUL")
-        if okFind and name ~= nil then
-            return true
-        end
-    end
-
     return false
 end
 
@@ -270,8 +260,6 @@ local function resetTransientPreyState()
     preyWidgetCache = nil
     trackedPreyFrame = nil
     trackedPreyFrames = setmetatable({}, { __mode = "k" })
-    trackedPreyVisualFrames = setmetatable({}, { __mode = "k" })
-    hookedPreyFrames = setmetatable({}, { __mode = "k" })
     killSomethingActive = false
     echoOfPredationActive = false
     killSomethingUntil = 0
@@ -344,17 +332,17 @@ local function isPlayerInPreyZone(questID)
         return nil
     end
 
-    local logIndex = C_QuestLog.GetLogIndexForQuestID(questID)
+    local logIndex = safeToNumber(C_QuestLog.GetLogIndexForQuestID(questID))
     if not logIndex then
         return nil
     end
 
-    local info = C_QuestLog.GetInfo(logIndex)
+    local info = publicValue(C_QuestLog.GetInfo(logIndex))
     if type(info) ~= "table" then
         return nil
     end
 
-    if info.isOnMap == true then
+    if publicField(info, "isOnMap") == true then
         return true
     end
 
@@ -374,8 +362,8 @@ local function isPlayerInPreyZone(questID)
         end
     end
 
-    if info.isOnMap ~= nil then
-        return info.isOnMap and true or false
+    if publicField(info, "isOnMap") ~= nil then
+        return publicField(info, "isOnMap") and true or false
     end
 
     return nil
@@ -394,356 +382,63 @@ local function getStageFromState(progressState)
     return 1
 end
 
-local function isPreyHuntProgressFrame(frameRef)
-    return frameRef
-        and type(frameRef.ResetAnimState) == "function"
-        and type(frameRef.AnimIn) == "function"
+local hiddenPreyAlphas = setmetatable({}, { __mode = "k" })
+
+local function canModifyPreyFrame(frame)
+    if not frame or (frame.IsForbidden and frame:IsForbidden()) then return false end
+    -- A pcall does not make protected frame operations legal in combat.
+    if InCombatLockdown and InCombatLockdown() then return false end
+    return not (frame.IsProtected and frame:IsProtected())
 end
 
-local function isLikelyPreyVisualFrame(frameRef)
-    if not frameRef then
-        return false
-    end
-
-    local name = nil
-    if frameRef.GetName then
-        local okName, resolvedName = pcall(frameRef.GetName, frameRef)
-        if okName and type(resolvedName) == "string" then
-            name = resolvedName
+local function applyPreyFrameVisibility(frame)
+    if not canModifyPreyFrame(frame) then return end
+    if getDB().hideBlizzardPreyWidget then
+        if hiddenPreyAlphas[frame] == nil then
+            local alpha = publicValue(frame:GetAlpha())
+            if type(alpha) ~= "number" then return end
+            hiddenPreyAlphas[frame] = alpha
         end
+        frame:SetAlpha(0)
+    elseif hiddenPreyAlphas[frame] ~= nil then
+        frame:SetAlpha(hiddenPreyAlphas[frame])
+        hiddenPreyAlphas[frame] = nil
     end
-    if type(name) == "string" then
-        local lowered = string.lower(name)
-        if lowered:find("prey", 1, true) or lowered:find("hunt", 1, true) then
-            return true
-        end
-        if lowered:find("icon", 1, true) or lowered:find("glow", 1, true) or lowered:find("pulse", 1, true) then
-            return true
-        end
-    end
-
-    if frameRef.effectController then
-        return true
-    end
-
-    if frameRef.GetRegions then
-        local okRegions, regions = pcall(function()
-            return { frameRef:GetRegions() }
-        end)
-        if okRegions and type(regions) == "table" then
-            for _, region in ipairs(regions) do
-                local regionName = nil
-                if region and region.GetName then
-                    local okRegionName, resolvedRegionName = pcall(region.GetName, region)
-                    if okRegionName and type(resolvedRegionName) == "string" then
-                        regionName = resolvedRegionName
-                    end
-                end
-                if type(regionName) == "string" then
-                    local lowered = string.lower(regionName)
-                    if lowered:find("prey", 1, true)
-                        or lowered:find("hunt", 1, true)
-                        or lowered:find("icon", 1, true)
-                        or lowered:find("glow", 1, true)
-                        or lowered:find("pulse", 1, true)
-                    then
-                        return true
-                    end
-                end
-            end
-        end
-    end
-
-    return false
 end
 
-ensurePreyWidgetHideHook = function(frameRef)
-    if not frameRef or hookedPreyFrames[frameRef] or not frameRef.HookScript then
-        return
-    end
-
-    hookedPreyFrames[frameRef] = true
-    frameRef:HookScript("OnShow", function(self)
-        if not getDB().hideBlizzardPreyWidget then
-            return
-        end
-
-        if self.SetAlpha then
-            pcall(self.SetAlpha, self, 0)
-        end
-        if self.Hide then
-            pcall(self.Hide, self)
-        end
-    end)
+ensurePreyWidgetHideHook = function(frame)
+    if not canModifyPreyFrame(frame) or hookedPreyFrames[frame] then return end
+    hookedPreyFrames[frame] = true
+    frame:HookScript("OnShow", applyPreyFrameVisibility)
 end
 
 local function captureLivePreyHuntFrames()
-    local container = _G.UIWidgetPowerBarContainerFrame
-    if not container or not container.GetChildren then
-        return
-    end
-
-    local function scanFrameTree(frameRef, depth, visited)
-        if not frameRef or (depth or 0) > 6 then
-            return
-        end
-
-        visited = visited or {}
-        if visited[frameRef] then
-            return
-        end
-        visited[frameRef] = true
-
-        if isPreyHuntProgressFrame(frameRef) then
-            trackedPreyFrames[frameRef] = true
-            trackedPreyFrame = frameRef
-            ensurePreyWidgetHideHook(frameRef)
-        elseif frameRef ~= container and isLikelyPreyVisualFrame(frameRef) then
-            trackedPreyVisualFrames[frameRef] = true
-            ensurePreyWidgetHideHook(frameRef)
-        end
-
-        if frameRef.GetChildren then
-            local okChildren, children = pcall(function()
-                return { frameRef:GetChildren() }
-            end)
-            if okChildren and type(children) == "table" then
-                for _, child in ipairs(children) do
-                    scanFrameTree(child, (depth or 0) + 1, visited)
+    -- Only inspect direct widget children; never suppress shared containers/scenes.
+    for _, name in ipairs({ "UIWidgetPowerBarContainerFrame", "UIWidgetBelowMinimapContainerFrame" }) do
+        local container = _G[name]
+        if container and not (container.IsForbidden and container:IsForbidden()) and container.GetChildren then
+            for _, frame in ipairs({ container:GetChildren() }) do
+                if not (frame.IsForbidden and frame:IsForbidden())
+                    and type(frame.PlayGainProgressAnim) == "function"
+                    and type(frame.PlayTransitionAnim) == "function" then
+                    trackedPreyFrames[frame] = true
+                    trackedPreyFrame = frame
+                    ensurePreyWidgetHideHook(frame)
                 end
             end
         end
     end
-
-    scanFrameTree(container, 0, {})
 end
 
 local function applyBlizzardWidgetVisibility()
-    local db = getDB()
     captureLivePreyHuntFrames()
-
-    local function isLikelyAnimatedVisualRegion(region)
-        if not region then
-            return false
-        end
-
-        local objectType = region.GetObjectType and region:GetObjectType() or nil
-        if objectType ~= "Texture" and objectType ~= "FontString" then
-            return false
-        end
-
-        local regionName = nil
-        if region.GetName then
-            local okName, resolvedName = pcall(region.GetName, region)
-            if okName and type(resolvedName) == "string" then
-                regionName = resolvedName
-            end
-        end
-        if type(regionName) ~= "string" then
-            return false
-        end
-
-        local lowered = string.lower(regionName)
-        return lowered:find("icon", 1, true) ~= nil
-            or lowered:find("glow", 1, true) ~= nil
-            or lowered:find("pulse", 1, true) ~= nil
-            or lowered:find("flare", 1, true) ~= nil
+    for frame in pairs(trackedPreyFrames) do
+        applyPreyFrameVisibility(frame)
     end
-
-    local function stopFrameAnimations(frameRef, depth, visited)
-        if not frameRef or (depth or 0) > 6 then
-            return
-        end
-
-        visited = visited or {}
-        if visited[frameRef] then
-            return
-        end
-        visited[frameRef] = true
-
-        if frameRef.GetAnimationGroups then
-            local okGroups, groups = pcall(function()
-                return { frameRef:GetAnimationGroups() }
-            end)
-            if okGroups and type(groups) == "table" then
-                for _, group in ipairs(groups) do
-                    if group and group.Stop then
-                        pcall(group.Stop, group)
-                    end
-                end
-            end
-        end
-
-        local commonAnimFields = {
-            "AnimIn", "AnimOut", "GlowAnim", "PulseAnim", "Loop", "LoopingGlow", "Shine",
-        }
-        for _, fieldName in ipairs(commonAnimFields) do
-            local candidate = frameRef[fieldName]
-            if candidate and type(candidate) ~= "function" and candidate.Stop then
-                pcall(candidate.Stop, candidate)
-            end
-        end
-
-        if frameRef.GetRegions then
-            local okRegions, regions = pcall(function()
-                return { frameRef:GetRegions() }
-            end)
-            if okRegions and type(regions) == "table" then
-                for _, region in ipairs(regions) do
-                    if isLikelyAnimatedVisualRegion(region) then
-                        if region.SetAlpha then
-                            pcall(region.SetAlpha, region, 0)
-                        end
-                        if region.Hide then
-                            pcall(region.Hide, region)
-                        end
-                    end
-                end
-            end
-        end
-
-        if frameRef.GetChildren then
-            local okChildren, children = pcall(function()
-                return { frameRef:GetChildren() }
-            end)
-            if okChildren and type(children) == "table" then
-                for _, child in ipairs(children) do
-                    stopFrameAnimations(child, (depth or 0) + 1, visited)
-                end
-            end
-        end
-    end
-
-    local function setRegionVisibility(frameRef, visible, depth, visited)
-        if not frameRef or (depth or 0) > 6 then
-            return
-        end
-
-        visited = visited or {}
-        if visited[frameRef] then
-            return
-        end
-        visited[frameRef] = true
-
-        if frameRef.GetRegions then
-            local okRegions, regions = pcall(function()
-                return { frameRef:GetRegions() }
-            end)
-            if okRegions and type(regions) == "table" then
-                for _, region in ipairs(regions) do
-                    if region then
-                        if visible then
-                            if region.SetAlpha then
-                                pcall(region.SetAlpha, region, 1)
-                            end
-                            if region.Show then
-                                pcall(region.Show, region)
-                            end
-                        else
-                            if region.SetAlpha then
-                                pcall(region.SetAlpha, region, 0)
-                            end
-                            if region.Hide then
-                                pcall(region.Hide, region)
-                            end
-                        end
-                    end
-                end
-            end
-        end
-
-        if frameRef.GetChildren then
-            local okChildren, children = pcall(function()
-                return { frameRef:GetChildren() }
-            end)
-            if okChildren and type(children) == "table" then
-                for _, child in ipairs(children) do
-                    setRegionVisibility(child, visible, (depth or 0) + 1, visited)
-                    if visible then
-                        if child.SetAlpha then
-                            pcall(child.SetAlpha, child, 1)
-                        end
-                        if child.Show then
-                            pcall(child.Show, child)
-                        end
-                    else
-                        if child.SetAlpha then
-                            pcall(child.SetAlpha, child, 0)
-                        end
-                        if child.Hide then
-                            pcall(child.Hide, child)
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    local function applyVisibility(frameRef)
-        if db.hideBlizzardPreyWidget then
-            stopFrameAnimations(frameRef, 0, {})
-            setRegionVisibility(frameRef, false, 0, {})
-            if frameRef.SetAlpha then
-                pcall(frameRef.SetAlpha, frameRef, 0)
-            end
-            if frameRef.Hide then
-                pcall(frameRef.Hide, frameRef)
-            end
-        else
-            setRegionVisibility(frameRef, true, 0, {})
-            if frameRef.SetAlpha then
-                pcall(frameRef.SetAlpha, frameRef, 1)
-            end
-            if frameRef.Show then
-                pcall(frameRef.Show, frameRef)
-            end
-        end
-    end
-
-    local function applyNamedSceneVisibility(frameName)
-        local frameRef = _G[frameName]
-        if not frameRef then
-            return
-        end
-
-        if db.hideBlizzardPreyWidget then
-            stopFrameAnimations(frameRef, 0, {})
-            setRegionVisibility(frameRef, false, 0, {})
-            if frameRef.SetAlpha then
-                pcall(frameRef.SetAlpha, frameRef, 0)
-            end
-            if frameRef.Hide then
-                pcall(frameRef.Hide, frameRef)
-            end
-        else
-            setRegionVisibility(frameRef, true, 0, {})
-            if frameRef.SetAlpha then
-                pcall(frameRef.SetAlpha, frameRef, 1)
-            end
-            if frameRef.Show then
-                pcall(frameRef.Show, frameRef)
-            end
-        end
-    end
-
-    for frameRef in pairs(trackedPreyFrames) do
-        applyVisibility(frameRef)
-    end
-
-    for frameRef in pairs(trackedPreyVisualFrames) do
-        applyVisibility(frameRef)
-    end
-
-    applyNamedSceneVisibility("UIWidgetBelowMinimapContainerFrame")
-    applyNamedSceneVisibility("UIWidgetBelowMinimapContainerFrameFrontModelScene")
-    applyNamedSceneVisibility("UIWidgetBelowMinimapContainerFrameBackModelScene")
-    applyNamedSceneVisibility("UIWidgetPowerBarContainerFrame")
-    applyNamedSceneVisibility("UIWidgetPowerBarContainerFrameFrontModelScene")
-    applyNamedSceneVisibility("UIWidgetPowerBarContainerFrameBackModelScene")
 end
 
 local function extractProgressPercentFromInfo(info, tooltipText)
-    if type(info) == "table" then
+    if type(publicValue(info)) == "table" then
         local directFields = {
             "progressPercentage",
             "progressPercent",
@@ -755,7 +450,7 @@ local function extractProgressPercentFromInfo(info, tooltipText)
         }
 
         for _, fieldName in ipairs(directFields) do
-            local value = info[fieldName]
+            local value = safeToNumber(publicField(info, fieldName))
             if type(value) == "number" then
                 if value >= 0 and value <= 1 then
                     return clamp(value * 100, 0, 100)
@@ -764,26 +459,16 @@ local function extractProgressPercentFromInfo(info, tooltipText)
             end
         end
 
-        local current = info.barValue or info.value or info.currentValue
-        local maximum = info.barMax or info.maxValue or info.totalValue or info.total or info.max
+        local current = safeToNumber(publicField(info, "barValue")) or safeToNumber(publicField(info, "value")) or safeToNumber(publicField(info, "currentValue"))
+        local maximum = safeToNumber(publicField(info, "barMax")) or safeToNumber(publicField(info, "maxValue")) or safeToNumber(publicField(info, "totalValue")) or safeToNumber(publicField(info, "total")) or safeToNumber(publicField(info, "max"))
         if type(current) == "number" and type(maximum) == "number" and maximum > 0 then
             return clamp((current / maximum) * 100, 0, 100)
         end
 
-        for key, value in pairs(info) do
-            if type(value) == "number" then
-                local lowered = string.lower(tostring(key))
-                if lowered:find("percent", 1, true) then
-                    if value >= 0 and value <= 1 then
-                        return clamp(value * 100, 0, 100)
-                    end
-                    return clamp(value, 0, 100)
-                end
-            end
-        end
+
     end
 
-    if type(tooltipText) == "string" then
+    if type(publicValue(tooltipText)) == "string" then
         local pct = tonumber(tooltipText:match("(%d+)%s*%%"))
         if pct then
             return clamp(pct, 0, 100)
@@ -794,7 +479,7 @@ local function extractProgressPercentFromInfo(info, tooltipText)
 end
 
 local function extractNearbyTrapText(tooltipText)
-    if type(tooltipText) ~= "string" or tooltipText == "" then
+    if type(publicValue(tooltipText)) ~= "string" or tooltipText == "" then
         return nil
     end
 
@@ -809,7 +494,7 @@ local function extractNearbyTrapText(tooltipText)
 end
 
 local function extractWarningStateFromText(text)
-    if type(text) ~= "string" or text == "" then
+    if type(publicValue(text)) ~= "string" or text == "" then
         return nil
     end
 
@@ -840,7 +525,7 @@ local function extractWarningStateFromText(text)
 end
 
 local function extractWarningStateFromTooltip(tooltipText)
-    if type(tooltipText) ~= "string" or tooltipText == "" then
+    if type(publicValue(tooltipText)) ~= "string" or tooltipText == "" then
         return nil
     end
 
@@ -859,7 +544,7 @@ local function extractWarningStateFromTooltip(tooltipText)
 end
 
 local function sanitizeStageDescription(text)
-    if type(text) ~= "string" then
+    if type(publicValue(text)) ~= "string" then
         return nil
     end
 
@@ -889,7 +574,7 @@ local function sanitizeStageDescription(text)
 end
 
 local function extractStageDescriptionFromTooltip(tooltipText)
-    if type(tooltipText) ~= "string" or tooltipText == "" then
+    if type(publicValue(tooltipText)) ~= "string" or tooltipText == "" then
         return nil
     end
 
@@ -909,12 +594,12 @@ local function extractTrapTextFromObjectives(questID)
     end
 
     local objectives = C_QuestLog.GetQuestObjectives(questID)
-    if type(objectives) ~= "table" then
+    if type(publicValue(objectives)) ~= "table" then
         return nil
     end
 
     for _, objective in ipairs(objectives) do
-        if type(objective) == "table" and type(objective.text) == "string" then
+        if type(publicValue(objective)) == "table" and type(publicValue(objective.text)) == "string" then
             local text = objective.text:gsub("^%s+", ""):gsub("%s+$", "")
             if text ~= "" and text:lower():find("trap", 1, true) then
                 return text
@@ -931,13 +616,13 @@ local function extractWarningStateFromObjectives(questID)
     end
 
     local objectives = C_QuestLog.GetQuestObjectives(questID)
-    if type(objectives) ~= "table" then
+    if type(publicValue(objectives)) ~= "table" then
         return nil
     end
 
     local bestMatch = nil
     for _, objective in ipairs(objectives) do
-        if type(objective) == "table" and type(objective.text) == "string" then
+        if type(publicValue(objective)) == "table" and type(publicValue(objective.text)) == "string" then
             local match = extractWarningStateFromText(objective.text)
             if match then
                 if match.type == "kill" then
@@ -957,12 +642,12 @@ local function extractStageDescriptionFromObjectives(questID)
     end
 
     local objectives = C_QuestLog.GetQuestObjectives(questID)
-    if type(objectives) ~= "table" then
+    if type(publicValue(objectives)) ~= "table" then
         return nil
     end
 
     for _, objective in ipairs(objectives) do
-        if type(objective) == "table" and type(objective.text) == "string" then
+        if type(publicValue(objective)) == "table" and type(publicValue(objective.text)) == "string" then
             local cleaned = sanitizeStageDescription(objective.text)
             if cleaned then
                 return cleaned
@@ -974,12 +659,12 @@ local function extractStageDescriptionFromObjectives(questID)
 end
 
 local function collectTrapTextFromRegionOwner(owner)
-    if not owner then
+    if not owner or (owner.IsForbidden and owner:IsForbidden()) then
         return nil
     end
 
     local function scanRegions(container)
-        if not container or not container.GetRegions then
+        if not container or (container.IsForbidden and container:IsForbidden()) or not container.GetRegions then
             return nil
         end
 
@@ -993,7 +678,7 @@ local function collectTrapTextFromRegionOwner(owner)
         for _, region in ipairs(regions) do
             if region and region.GetObjectType and region:GetObjectType() == "FontString" and region.GetText then
                 local okText, text = pcall(region.GetText, region)
-                if okText and type(text) == "string" and text ~= "" and text:lower():find("trap", 1, true) then
+                if okText and type(publicValue(text)) == "string" and text ~= "" and text:lower():find("trap", 1, true) then
                     return text:gsub("^%s+", ""):gsub("%s+$", "")
                 end
             end
@@ -1025,12 +710,12 @@ local function collectTrapTextFromRegionOwner(owner)
 end
 
 local function collectWarningStateFromRegionOwner(owner)
-    if not owner then
+    if not owner or (owner.IsForbidden and owner:IsForbidden()) then
         return nil
     end
 
     local function scanRegions(container)
-        if not container or not container.GetRegions then
+        if not container or (container.IsForbidden and container:IsForbidden()) or not container.GetRegions then
             return nil
         end
 
@@ -1121,12 +806,12 @@ local function extractWarningStateFromWidgetFrame()
 end
 
 local function collectStageDescriptionFromRegionOwner(owner)
-    if not owner then
+    if not owner or (owner.IsForbidden and owner:IsForbidden()) then
         return nil
     end
 
     local function scanRegions(container)
-        if not container or not container.GetRegions then
+        if not container or (container.IsForbidden and container:IsForbidden()) or not container.GetRegions then
             return nil
         end
 
@@ -1194,19 +879,19 @@ local function extractStageDescriptionFromWidgetFrame()
 end
 
 local function readPreyFieldsFromFrame(frameRef)
-    if type(frameRef) ~= "table" then
+    if type(publicValue(frameRef)) ~= "table" or (frameRef.IsForbidden and frameRef:IsForbidden()) then
         return nil
     end
 
     local function readValue(obj, keyName)
-        if type(obj) ~= "table" then
+        if type(publicValue(obj)) ~= "table" then
             return nil
         end
 
         local okDirect, directValue = pcall(function()
             return obj[keyName]
         end)
-        if okDirect and directValue ~= nil then
+        if okDirect and publicValue(directValue) ~= nil then
             return directValue
         end
 
@@ -1214,9 +899,9 @@ local function readPreyFieldsFromFrame(frameRef)
         local okGetter, getter = pcall(function()
             return obj[getterName]
         end)
-        if okGetter and type(getter) == "function" then
+        if okGetter and type(publicValue(getter)) == "function" then
             local okCall, value = pcall(getter, obj)
-            if okCall and value ~= nil then
+            if okCall and publicValue(value) ~= nil then
                 return value
             end
         end
@@ -1235,9 +920,9 @@ local function readPreyFieldsFromFrame(frameRef)
     for _, candidate in ipairs(candidates) do
         local value = candidate.value
         if type(value) == "table" then
-            local progressState = readValue(value, "progressState")
+            local progressState = safeToNumber(readValue(value, "progressState"))
             local tooltipText = readValue(value, "tooltip")
-            if type(tooltipText) ~= "string" then
+            if type(publicValue(tooltipText)) ~= "string" then
                 tooltipText = nil
             end
             local percent = extractProgressPercentFromInfo(value, tooltipText)
@@ -1266,16 +951,18 @@ local function installPreyWidgetHook()
     end
 
     local ok = pcall(hooksecurefunc, mixin, "Setup", function(self, widgetInfo)
+        if self.IsForbidden and self:IsForbidden() then return end
         trackedPreyFrame = self
         trackedPreyFrames[self] = true
+        ensurePreyWidgetHideHook(self)
 
         if shouldIgnoreWidgetCache() then
             applyBlizzardWidgetVisibility()
             return
         end
 
-        local tooltipText = type(widgetInfo) == "table" and type(widgetInfo.tooltip) == "string" and widgetInfo.tooltip or nil
-        local progressState = type(widgetInfo) == "table" and widgetInfo.progressState or nil
+        local tooltipText = publicField(widgetInfo, "tooltip")
+        local progressState = safeToNumber(publicField(widgetInfo, "progressState"))
         local percent = extractProgressPercentFromInfo(widgetInfo, tooltipText)
         local source = "widgetInfo"
 
@@ -1348,8 +1035,9 @@ local function extractObjectivePercent(questID)
     local questBarPct
     if GetQuestProgressBarPercent then
         local ok, value = pcall(GetQuestProgressBarPercent, questID)
-        if ok and type(value) == "number" then
-            questBarPct = clamp(value, 0, 100)
+        if ok then
+            value = safeToNumber(value)
+            if value then questBarPct = clamp(value, 0, 100) end
         end
     end
 
@@ -1358,7 +1046,7 @@ local function extractObjectivePercent(questID)
     end
 
     local objectives = C_QuestLog.GetQuestObjectives(questID)
-    if type(objectives) ~= "table" then
+    if type(publicValue(objectives)) ~= "table" then
         return questBarPct
     end
 
@@ -1367,15 +1055,15 @@ local function extractObjectivePercent(questID)
     local foundNumeric = false
 
     for _, objective in ipairs(objectives) do
-        if type(objective) == "table" then
-            local fulfilled = tonumber(objective.numFulfilled or objective.fulfilled)
-            local required = tonumber(objective.numRequired or objective.required)
+        if type(publicValue(objective)) == "table" then
+            local fulfilled = safeToNumber(publicField(objective, "numFulfilled")) or safeToNumber(publicField(objective, "fulfilled"))
+            local required = safeToNumber(publicField(objective, "numRequired")) or safeToNumber(publicField(objective, "required"))
 
             if fulfilled ~= nil and required ~= nil and required > 0 then
                 totalFulfilled = totalFulfilled + math.max(0, fulfilled)
                 totalRequired = totalRequired + math.max(0, required)
                 foundNumeric = true
-            elseif type(objective.text) == "string" then
+            elseif type(publicValue(objective.text)) == "string" then
                 local current, maximum = objective.text:match("(%d+)%s*/%s*(%d+)")
                 current = tonumber(current)
                 maximum = tonumber(maximum)
@@ -1444,7 +1132,7 @@ local function getPreyProgress()
 
     if percent == nil then
         local progressState = cacheMatchesQuest and preyWidgetCache and preyWidgetCache.progressState or nil
-        if progressState == nil and C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted and C_QuestLog.IsQuestFlaggedCompleted(questID) then
+        if progressState == nil and C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted and publicValue(C_QuestLog.IsQuestFlaggedCompleted(questID)) == true then
             progressState = PREY_PROGRESS_FINAL
         end
         stage = getStageFromState(progressState)
@@ -1889,65 +1577,28 @@ local function createOptionsSlider(parent, label, yOffset, minValue, maxValue, s
 end
 
 local function createThemeDropdown(parent, yOffset)
-    if not (UIDropDownMenu_Initialize and UIDropDownMenu_CreateInfo and UIDropDownMenu_AddButton and UIDropDownMenu_SetText and UIDropDownMenu_SetWidth) then
-        return createOptionsButton(parent, "Theme: Blizzard Gold", yOffset - 22, function()
-            local order = { "blizzard", "dark", "predator" }
-            local db = getDB()
-            local currentIndex = 1
-            for index, themeKey in ipairs(order) do
-                if db.theme == themeKey then
-                    currentIndex = index
-                    break
-                end
-            end
-            local nextTheme = order[(currentIndex % #order) + 1]
-            db.theme = nextTheme
-            applyLayout()
-            addon:Refresh()
-            refreshOptionsPanel()
-        end)
-    end
-
     local label = parent:CreateFontString(nil, "ARTWORK", "GameFontNormal")
     label:SetPoint("TOPLEFT", parent, "TOPLEFT", 28, yOffset)
     label:SetText("Theme")
 
-    local dropdown = CreateFrame("Frame", "EasyPreyProgressThemeDropdown", parent, "UIDropDownMenuTemplate")
-    dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", -16, -4)
-
-    UIDropDownMenu_SetWidth(dropdown, 160)
-
-    local function setTheme(themeKey)
-        getDB().theme = themeKey
-        UIDropDownMenu_SetText(dropdown, THEMES[themeKey].label)
-        applyLayout()
-        addon:Refresh()
-        refreshOptionsPanel()
-    end
-
-    UIDropDownMenu_Initialize(dropdown, function(_, level)
-        if level ~= 1 then
-            return
-        end
-
-        local order = { "blizzard", "dark", "predator" }
-        for _, themeKey in ipairs(order) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.text = THEMES[themeKey].label
-            info.checked = false
-            info.notCheckable = true
-            info.func = function()
-                setTheme(themeKey)
-            end
-            UIDropDownMenu_AddButton(info, level)
+    local dropdown = CreateFrame("DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
+    dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -4)
+    dropdown:SetWidth(160)
+    dropdown:SetupMenu(function(_, rootDescription)
+        for _, themeKey in ipairs({ "blizzard", "dark", "predator" }) do
+            rootDescription:CreateRadio(THEMES[themeKey].label,
+                function(key) return getDB().theme == key end,
+                function(key)
+                    getDB().theme = key
+                    applyLayout()
+                    addon:Refresh()
+                    refreshOptionsPanel()
+                end, themeKey)
         end
     end)
-
-    function dropdown:Refresh(db)
-        local theme = THEMES[db.theme] or THEMES.blizzard
-        UIDropDownMenu_SetText(dropdown, theme.label)
+    function dropdown:Refresh()
+        self:GenerateMenu()
     end
-
     return dropdown
 end
 
@@ -2185,7 +1836,7 @@ addon:SetScript("OnEvent", function(self, event, arg1, ...)
     end
 
     if event == "UNIT_AURA" then
-        if arg1 == "player" then
+        if publicValue(arg1) == "player" then
             refreshMechanicStates()
         end
     elseif event == "PARTY_KILL" then

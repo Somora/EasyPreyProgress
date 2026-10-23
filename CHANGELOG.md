@@ -1,6 +1,14 @@
 # EasyPreyProgress Changelog
 All notable changes to this project will be documented in this file.
 
+## Version 1.1.9 (23/10/2026)
+- Guard widget, quest, and text parsing against secret values before comparing, indexing, or calculating.
+- Remove the restricted legacy aura scan fallback; unavailable aura data no longer triggers warnings.
+- Limit Blizzard widget suppression to identified Prey frames, preserving their original alpha and leaving shared containers and animations alone.
+- Defer Blizzard frame visibility changes during combat and skip protected or forbidden frames.
+- Update Prey frame detection for the current animation methods and avoid duplicate OnShow hooks after switching hunts.
+- Replace the legacy shared theme dropdown with Blizzard's current menu API.
+
 ## Version 1.1.8 (15/10/2026)
 - Updated the addon interface version to `120105` for World of Warcraft Retail `12.1.5`.
 

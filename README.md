@@ -61,6 +61,6 @@ Available options include:
 
 ## Version
 
-Current release: `1.1.8`
+Current release: `1.1.9`
 
 Compatible with World of Warcraft Retail `12.1.5` (interface `120105`).
